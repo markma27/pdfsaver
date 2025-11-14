@@ -39,7 +39,7 @@ def extract_with_llm(text: str, max_chars: int = 2000) -> Optional[Dict[str, Any
     
     prompt = f"""Analyze this Australian financial document text and extract key information. Return ONLY a valid JSON object with these exact fields:
 {{
-  "doc_type": "DividendStatement|DistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|Other|null",
+  "doc_type": "DividendStatement|DistributionStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|Other|null",
   "issuer": "fund/product/company name (NOT investor name) or null",
   "asx_code": "ASX code (e.g., BAOR, AAA) or null",
   "date_iso": "YYYY-MM-DD or null",
@@ -50,12 +50,15 @@ CRITICAL: Extract information ONLY from THIS document. Do NOT use information fr
 
 Important:
 - "issuer" should be the FUND/PRODUCT/COMPANY name from THIS document (extract from document text)
+  * For BuyContract/SellContract: Extract the INVESTMENT/SECURITY name being bought/sold (e.g., "Insurance Australia Group Ltd FRN...", "Scentre Group Trust 1 FRN...", "BRAMBLES LIMITED"). Do NOT use the broker name (e.g., "JBWere") or investor name
+  * For other document types: Extract the fund/product/company name
 - Do NOT use investor/account holder names
-- "asx_code" is the ASX stock code if available in THIS document
+- "asx_code" is the ASX stock code if available in THIS document (e.g., "BXB", "XRO", "REA")
 - For bank statements, "issuer" is the bank name
 - "date_iso" should be extracted from THIS document using these priorities:
   * For DividendStatement: Use "Payment Date" first, then "Record Date", then "Statement Date"
   * For DistributionStatement: Use "Payment Date" first, then "Record Date", then "Distribution Date"
+  * For BuyContract/SellContract: Use "Confirmation Date" first (e.g., "Confirmation date: 11/07/2025" → "2025-07-11"), then "Transaction Date", then "Trade Date", then "Settlement Date", then "As at Date"
   * For other types: Use "Statement Date" or document date
   * Format: YYYY-MM-DD (e.g., if you see "15/05/2024" or "15 May 2024", convert to "2024-05-15")
   * IMPORTANT: Dates in DD/MM/YYYY format (Australian format) - day is first, month is second
@@ -63,14 +66,23 @@ Important:
 
 Document types:
 - DividendStatement: Dividend payment statements
-- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds)
+- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds). Look for "DISTRIBUTION STATEMENT", "Distribution Statement", "Distribution Advice", "Distribution Payment", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution". IMPORTANT: Do NOT confuse with BuyContract - Distribution Statements are about fund distributions, NOT purchases
 - PeriodicStatement: Periodic statements showing transactions, balances, fees (managed funds)
 - BankStatement: Bank account statements
-- BuyContract: Share purchase contract notes
-- SellContract: Share sale contract notes
-- HoldingStatement: Shareholding statements (CHESS, HIN, SRN)
-- TaxStatement: Tax statements (AMMA, AMIT, annual tax)
+- BuyContract: Buy confirmations, trade confirmations for purchases, contract notes showing BUY transactions. Look for "BUY CONFIRMATION", "Buy Confirmation", "Trade Confirmation", "We have bought", "Transaction Type: BUY", "Consideration", "Brokerage". IMPORTANT: Must have clear purchase/transaction indicators, NOT just the word "BUY" in other contexts
+- SellContract: Sell confirmations, trade confirmations for sales, contract notes showing SELL transactions. Look for "SELL CONFIRMATION", "Sell Confirmation", "Trade Confirmation", "We have sold", "Transaction Type: SELL"
+- HoldingStatement: Shareholding statements showing holdings/portfolio (CHESS, HIN, SRN, Portfolio Summary, Holdings Summary). Look for "CHESS", "HIN", "SRN", "Holdings", "Portfolio", "Shareholding Statement"
+- TaxStatement: Tax-related statements. Look for "Tax Statement", "Tax Summary", "AMMA", "AMIT", "Taxation Statement", "NAV & Taxation Statement", "Tax Year", "Assessable Income", "Tax Return", "Tax Withheld", "Tax Payable". IMPORTANT: "NAV & Taxation Statement" is a TaxStatement, NOT a HoldingStatement or NetAssetSummaryStatement
+- NetAssetSummaryStatement: Net Asset Value (NAV) summaries showing asset values, unit prices, net asset values WITHOUT tax information. Look for "Net Asset Summary", "NAV Summary", "Net Asset Value", "Unit Price", "Asset Summary", "NAV Statement" (without taxation). IMPORTANT: This is different from "NAV & Taxation Statement" which is a TaxStatement. If the document shows both NAV and tax information, it's a TaxStatement. If it only shows NAV/asset values without tax details, it's a NetAssetSummaryStatement
+- CallAndDistributionStatement: Call and Distribution Statements combining capital calls with distributions. Look for "Call and Distribution Statement", "Dist and Capital Call", "Distribution and Capital Call", "Capital Call", "Notional Capital Call", "Called Capital", "Uncalled Committed Capital" combined with distribution information
 - Other: Other financial documents
+
+CRITICAL: When classifying documents:
+- If you see "DISTRIBUTION STATEMENT" or "Distribution Statement" in the title, it is ALWAYS a DistributionStatement, NOT a BuyContract
+- BuyContract requires clear purchase/transaction indicators like "BUY CONFIRMATION", "We have bought", "Consideration", "Brokerage"
+- Do NOT classify as BuyContract just because the word "BUY" appears in other contexts (e.g., "Buy-Sell Spread" in fund statements)
+- "Net Asset Summary" or "NAV Summary" WITHOUT tax information = NetAssetSummaryStatement
+- "NAV & Taxation Statement" or documents with both NAV and tax information = TaxStatement
 
 Document text:
 {text_sample}
@@ -123,6 +135,123 @@ JSON:"""
     return None
 
 
+def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 4000) -> Optional[Dict[str, Any]]:
+    """
+    Combined LLM call: Extract fields AND suggest filename in one request
+    This reduces HTTP overhead and improves speed
+    Returns dict with fields and suggested_filename, or None if LLM unavailable
+    """
+    if not USE_LLM or not check_ollama_available():
+        return None
+    
+    # Truncate text to avoid token limits
+    text_sample = text[:max_chars] if len(text) > max_chars else text
+    
+    prompt = f"""Analyze this Australian financial document text and extract key information AND suggest a filename. Return ONLY a valid JSON object with these exact fields:
+{{
+  "doc_type": "DividendStatement|DistributionStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|Other|null",
+  "issuer": "fund/product/company name (NOT investor name) or null",
+  "asx_code": "ASX code (e.g., BAOR, AAA) or null",
+  "date_iso": "YYYY-MM-DD or null",
+  "account_last4": "last 4 digits or null",
+  "suggested_filename": "YYYY-MM-DD_[fund-product-slug]_document-type.pdf or null"
+}}
+
+CRITICAL: Extract information ONLY from THIS document. Do NOT use information from previous documents.
+
+Important:
+- "issuer" should be the FUND/PRODUCT/COMPANY name from THIS document (extract from document text)
+  * For BuyContract/SellContract: Extract the INVESTMENT/SECURITY name being bought/sold (e.g., "Insurance Australia Group Ltd", "Scentre Group Trust 1", "BRAMBLES LIMITED"). Do NOT use the broker name (e.g., "JBWere") or investor name
+  * For other document types: Extract the fund/product/company name
+- Do NOT use investor/account holder names
+- "asx_code" is the ASX stock code if available in THIS document (e.g., "BXB", "XRO", "REA")
+- For bank statements, "issuer" is the bank name
+- "date_iso" should be extracted from THIS document using these priorities:
+  * For DividendStatement: Use "Payment Date" first, then "Record Date", then "Statement Date"
+  * For DistributionStatement: Use "Payment Date" first, then "Record Date", then "Distribution Date"
+  * For BuyContract/SellContract: Use "Confirmation Date" first (e.g., "Confirmation date: 11/07/2025" → "2025-07-11"), then "Transaction Date", then "Trade Date", then "Settlement Date", then "As at Date"
+  * For other types: Use "Statement Date" or document date
+  * Format: YYYY-MM-DD (e.g., if you see "15/05/2024" or "15 May 2024", convert to "2024-05-15")
+  * IMPORTANT: Dates in DD/MM/YYYY format (Australian format) - day is first, month is second
+- "account_last4" should be the investor number or account last 4 digits from THIS document
+- "suggested_filename": Generate filename in format YYYY-MM-DD_[fund-product-slug]_document-type.pdf
+  * Remove company suffixes: "Pty Ltd", "Limited", "Ltd" (and all variations)
+  * For BuyContract/SellContract: Use investment/security name, NOT broker name
+  * Do NOT include account numbers or identifiers
+  * Document type: "dividend-statement", "distribution-statement", "buy-contract", "sell-contract", etc.
+
+Document types:
+- DividendStatement: Dividend payment statements
+- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds). Look for "DISTRIBUTION STATEMENT", "Distribution Statement", "Distribution Advice", "Distribution Payment", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution". IMPORTANT: Do NOT confuse with BuyContract - Distribution Statements are about fund distributions, NOT purchases
+- PeriodicStatement: Periodic statements showing transactions, balances, fees (managed funds)
+- BankStatement: Bank account statements
+- BuyContract: Buy confirmations, trade confirmations for purchases, contract notes showing BUY transactions. Look for "BUY CONFIRMATION", "Buy Confirmation", "Trade Confirmation", "We have bought", "Transaction Type: BUY", "Consideration", "Brokerage". IMPORTANT: Must have clear purchase/transaction indicators, NOT just the word "BUY" in other contexts
+- SellContract: Sell confirmations, trade confirmations for sales, contract notes showing SELL transactions. Look for "SELL CONFIRMATION", "Sell Confirmation", "Trade Confirmation", "We have sold", "Transaction Type: SELL"
+- HoldingStatement: Shareholding statements showing holdings/portfolio (CHESS, HIN, SRN, Portfolio Summary, Holdings Summary). Look for "CHESS", "HIN", "SRN", "Holdings", "Portfolio", "Shareholding Statement"
+- TaxStatement: Tax-related statements. Look for "Tax Statement", "Tax Summary", "AMMA", "AMIT", "Taxation Statement", "NAV & Taxation Statement", "Tax Year", "Assessable Income", "Tax Return", "Tax Withheld", "Tax Payable". IMPORTANT: "NAV & Taxation Statement" is a TaxStatement, NOT a HoldingStatement or NetAssetSummaryStatement
+- NetAssetSummaryStatement: Net Asset Value (NAV) summaries showing asset values, unit prices, net asset values WITHOUT tax information. Look for "Net Asset Summary", "NAV Summary", "Net Asset Value", "Unit Price", "Asset Summary", "NAV Statement" (without taxation). IMPORTANT: This is different from "NAV & Taxation Statement" which is a TaxStatement. If the document shows both NAV and tax information, it's a TaxStatement. If it only shows NAV/asset values without tax details, it's a NetAssetSummaryStatement
+- CallAndDistributionStatement: Call and Distribution Statements combining capital calls with distributions. Look for "Call and Distribution Statement", "Dist and Capital Call", "Distribution and Capital Call", "Capital Call", "Notional Capital Call", "Called Capital", "Uncalled Committed Capital" combined with distribution information
+- Other: Other financial documents
+
+CRITICAL: When classifying documents:
+- If you see "DISTRIBUTION STATEMENT" or "Distribution Statement" in the title, it is ALWAYS a DistributionStatement, NOT a BuyContract
+- BuyContract requires clear purchase/transaction indicators like "BUY CONFIRMATION", "We have bought", "Consideration", "Brokerage"
+- Do NOT classify as BuyContract just because the word "BUY" appears in other contexts (e.g., "Buy-Sell Spread" in fund statements)
+- "Net Asset Summary" or "NAV Summary" WITHOUT tax information = NetAssetSummaryStatement
+- "NAV & Taxation Statement" or documents with both NAV and tax information = TaxStatement
+
+Document text:
+{text_sample}
+
+JSON:"""
+
+    try:
+        response = httpx.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 300  # Increased to accommodate filename
+                }
+            },
+            timeout=30.0
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            response_text = result.get("response", "").strip()
+            
+            # Extract JSON from response (handle markdown code blocks)
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            # Try to parse JSON
+            try:
+                extracted = json.loads(response_text)
+                # Validate and clean extracted data
+                return {
+                    "doc_type": extracted.get("doc_type") if extracted.get("doc_type") != "null" else None,
+                    "issuer": extracted.get("issuer") if extracted.get("issuer") != "null" else None,
+                    "asx_code": extracted.get("asx_code") if extracted.get("asx_code") != "null" else None,
+                    "date_iso": extracted.get("date_iso") if extracted.get("date_iso") != "null" else None,
+                    "account_last4": extracted.get("account_last4") if extracted.get("account_last4") != "null" else None,
+                    "suggested_filename": extracted.get("suggested_filename") if extracted.get("suggested_filename") != "null" else None
+                }
+            except json.JSONDecodeError:
+                print(f"LLM JSON parsing failed: {response_text[:200]}")
+                return None
+    except Exception as e:
+        print(f"LLM combined extraction error: {e}")
+        return None
+    
+    return None
+
+
 def suggest_filename_with_llm(fields: Dict[str, Optional[str]], text_sample: str = "") -> Optional[str]:
     """
     Use LLM to suggest a better filename based on extracted fields and document context
@@ -147,15 +276,17 @@ FULL Document Context (read carefully):
 {context_sample}
 
 CRITICAL INSTRUCTIONS:
-1. **READ THE DOCUMENT CONTEXT ABOVE CAREFULLY** - The fund/product name is IN THE TEXT
-2. **Extract the ACTUAL fund/product name from the document context** - Look for:
-   - Fund names after "Fund:", "Product:", "ETF:", or in document titles
-   - The fund name is usually near the top of the document or in a title
-   - Extract the COMPLETE fund/product name, not just the company name
-   - For example, if you see "Company Name ABC Fund Class X", extract "Company Name ABC Fund Class X", not just "Company Name"
+1. **READ THE DOCUMENT CONTEXT ABOVE CAREFULLY** - The fund/product/investment name is IN THE TEXT
+2. **Extract the ACTUAL fund/product/investment name from the document context** - Look for:
+   - For BuyContract/SellContract: Extract the INVESTMENT/SECURITY name being bought/sold. Look for fields like "Investment:", "Security Description:", "Code:", or the main investment name in the transaction details. Examples: "Insurance Australia Group Ltd FRN 3MBBSW...", "Scentre Group Trust 1 FRN...", "BRAMBLES LIMITED". Do NOT use broker names (e.g., "JBWere") or investor names
+   - For other document types: Fund names after "Fund:", "Product:", "ETF:", or in document titles
+   - The name is usually in the main transaction/investment section
+   - Extract a MEANINGFUL name - for complex investments, use the main company/trust name (e.g., "Insurance Australia Group" not the full FRN description)
+   - Remove technical details like "FRN", "Callable", "Matures" dates, coupon rates unless they are essential to identify the investment
 3. **ALWAYS include the date** - Extract from document context using these priorities:
    - For DividendStatement: Look for "Payment Date" first (e.g., "Payment Date: 15/05/2024" → "2024-05-15"), then "Record Date", then "Statement Date"
    - For DistributionStatement: Look for "Payment Date" first, then "Record Date", then "Distribution Date"
+   - For BuyContract/SellContract: Look for "Confirmation Date" first (e.g., "Confirmation date: 11/07/2025" → "2025-07-11"), then "Transaction Date", then "Trade Date", then "Settlement Date"
    - For other types: Look for "Statement Date" or document date
    - Format: YYYY-MM-DD
    - CRITICAL: Australian dates are DD/MM/YYYY format - day comes first, month second (e.g., "15/05/2024" = May 15, 2024 = "2024-05-15")
@@ -171,11 +302,14 @@ CRITICAL INSTRUCTIONS:
    - "dividend-statement", "distribution-statement", "periodic-statement", "bank-statement", "buy-contract", "sell-contract", "holding-statement", "tax-statement"
 
 IMPORTANT: 
-- Extract the SPECIFIC fund/product name from THIS document's context - each document is different
-- Do NOT use generic company names - use the FULL fund/product name
+- Extract the SPECIFIC fund/product/investment name from THIS document's context - each document is different
+- For BuyContract/SellContract: Use the investment/security name (e.g., "Insurance Australia Group", "Scentre Group Trust 1", "BRAMBLES LIMITED"), NOT the broker name
+- Do NOT use generic company names - use the FULL fund/product/investment name
 - Do NOT use investor/account holder names
-- Do NOT use ASX codes unless fund name is completely unavailable
-- Read the document context carefully to find the actual fund/product name
+- Do NOT use broker names (e.g., "JBWere", "CommSec") for BuyContract/SellContract
+- Do NOT use ASX codes unless fund/investment name is completely unavailable
+- Read the document context carefully to find the actual fund/product/investment name
+- If the extracted fields are incomplete or incorrect, use your best judgment from the document context to generate a meaningful filename
 
 CRITICAL: Return ONLY the filename. Do NOT include any explanation, reasoning, or additional text. Just the filename.
 

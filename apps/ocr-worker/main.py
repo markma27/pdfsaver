@@ -20,12 +20,13 @@ from pydantic import BaseModel
 
 # LLM helper (optional)
 try:
-    from llm_helper import extract_with_llm, suggest_filename_with_llm, check_ollama_available
+    from llm_helper import extract_with_llm, suggest_filename_with_llm, extract_and_suggest_filename_with_llm, check_ollama_available
     LLM_AVAILABLE = True
 except ImportError:
     LLM_AVAILABLE = False
     extract_with_llm = None
     suggest_filename_with_llm = None
+    extract_and_suggest_filename_with_llm = None
     check_ollama_available = lambda: False
 
 app = FastAPI(title="PDFsaver OCR Worker", version="1.0.0")
@@ -83,8 +84,12 @@ DOC_TYPE_PATTERNS = {
         "hints": ["Record Date", "Payment Date", "DRP", "Dividend Reinvestment", "Dividend"]
     },
     "DistributionStatement": {
-        "must": ["Distribution statement", "Distribution Advice", "Distribution Payment"],
-        "hints": ["Distribution", "Payment date", "Record date", "ETF", "Managed Fund"]
+        "must": ["Distribution statement", "Distribution Advice", "Distribution Payment", "DISTRIBUTION STATEMENT"],
+        "hints": ["Distribution", "Payment date", "Record date", "ETF", "Managed Fund", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution"]
+    },
+    "CallAndDistributionStatement": {
+        "must": ["Call and Distribution Statement", "CALL AND DISTRIBUTION STATEMENT", "Call & Distribution Statement", "Dist and Capital Call", "DIST AND CAPITAL CALL", "Distribution and Capital Call", "DISTRIBUTION AND CAPITAL CALL"],
+        "hints": ["Capital Call", "Call", "Distribution", "Net Cash Distribution", "Notional Capital Call", "Called Capital", "Uncalled Committed Capital", "Dist & Capital Call"]
     },
     "PeriodicStatement": {
         "must": ["Periodic Statement"],
@@ -95,20 +100,24 @@ DOC_TYPE_PATTERNS = {
         "hints": ["Account Number", "BSB", "Transaction", "Balance", "Bank"]
     },
     "BuyContract": {
-        "must": ["CONTRACT NOTE", "BUY"],
-        "hints": ["Purchase", "Acquisition", "Buy Order"]
+        "must": ["BUY CONFIRMATION", "BUY", "We have bought"],
+        "hints": ["Buy Confirmation", "Trade Confirmation", "Purchase", "Acquisition", "Buy Order", "CONTRACT NOTE", "We confirm the following transaction", "Transaction Type: BUY", "Consideration", "Brokerage"]
     },
     "SellContract": {
-        "must": ["CONTRACT NOTE", "SELL"],
-        "hints": ["Sale", "Disposal", "Sell Order"]
+        "must": ["SELL"],
+        "hints": ["Sell Confirmation", "Trade Confirmation", "Sale", "Disposal", "Sell Order", "CONTRACT NOTE", "We have sold", "We confirm the following transaction", "Transaction Type: SELL"]
     },
     "HoldingStatement": {
         "must": ["CHESS", "Issuer Sponsored", "SRN", "HIN"],
         "hints": ["Holder Identification Number", "Statement Date", "Holdings", "Portfolio"]
     },
     "TaxStatement": {
-        "must": ["Annual Tax Statement", "Tax Summary", "AMMA", "AMIT"],
-        "hints": ["Tax Year", "Assessable Income", "Tax Return"]
+        "must": ["Annual Tax Statement", "Tax Summary", "AMMA", "AMIT", "NAV & Taxation Statement", "NAV AND TAXATION STATEMENT", "Taxation Statement", "TAXATION STATEMENT", "NAV and Taxation", "NAV AND TAXATION"],
+        "hints": ["Tax Year", "Assessable Income", "Tax Return", "Taxation", "Tax Withheld", "Tax Payable"]
+    },
+    "NetAssetSummaryStatement": {
+        "must": ["Net Asset Summary", "NET ASSET SUMMARY", "NAV Summary", "NAV SUMMARY", "Net Asset Value Summary"],
+        "hints": ["Net Asset Value", "NAV", "Unit Price", "Asset Summary", "Asset Value", "Unit Balance", "Total Assets", "Total Liabilities"]
     }
 }
 
@@ -141,12 +150,14 @@ ISSUERS = {
 DATE_PRIORITIES = {
     "DividendStatement": ["Payment Date", "Record Date", "Statement Date", "Date"],
     "DistributionStatement": ["Payment Date", "Record Date", "Distribution Date", "Statement Date", "Date"],
+    "CallAndDistributionStatement": ["Statement Date", "Date"],
     "PeriodicStatement": ["Statement Date", "Period End", "Date"],
     "BankStatement": ["Statement Date", "Period End", "Date"],
-    "BuyContract": ["Trade Date", "Settlement Date", "Statement Date", "Date"],
-    "SellContract": ["Trade Date", "Settlement Date", "Statement Date", "Date"],
+    "BuyContract": ["Confirmation Date", "Transaction Date", "Trade Date", "Settlement Date", "As at Date", "Date"],
+    "SellContract": ["Confirmation Date", "Transaction Date", "Trade Date", "Settlement Date", "As at Date", "Date"],
     "HoldingStatement": ["Statement Date", "Date"],
-    "TaxStatement": ["Statement Date", "Tax Year", "Date"]
+    "TaxStatement": ["Statement Date", "Tax Year", "Date"],
+    "NetAssetSummaryStatement": ["Statement Date", "As at Date", "Date"]
 }
 
 ACCOUNT_PATTERNS = [
@@ -161,17 +172,65 @@ def classify_doc_type(text: str) -> Tuple[Optional[str], int]:
     best_match = None
     best_score = 0
     
+    # Special handling: Check for "Call and Distribution Statement" FIRST (highest priority)
+    # This is more specific than just "Distribution Statement"
+    # Check for various forms: "Call and Distribution", "Dist and Capital Call", etc.
+    is_call_and_dist = (
+        "CALL AND DISTRIBUTION STATEMENT" in upper_text or 
+        "CALL & DISTRIBUTION STATEMENT" in upper_text or
+        "DIST AND CAPITAL CALL" in upper_text or
+        "DISTRIBUTION AND CAPITAL CALL" in upper_text or
+        ("CAPITAL CALL" in upper_text and "DISTRIBUTION" in upper_text and "STATEMENT" in upper_text)
+    )
+    if is_call_and_dist:
+        call_distribution_hints = ["CAPITAL CALL", "CALL", "DISTRIBUTION", "NET CASH DISTRIBUTION", "NOTIONAL CAPITAL CALL", "CALLED CAPITAL", "UNCALLED COMMITTED CAPITAL", "DIST & CAPITAL CALL"]
+        hint_count = sum(1 for hint in call_distribution_hints if hint in upper_text)
+        call_distribution_score = 95 + hint_count * 5
+        if call_distribution_score > best_score:
+            best_match = "CallAndDistributionStatement"
+            best_score = call_distribution_score
+    
+    # Special handling: Check for Distribution Statement (lower priority than Call and Distribution)
+    # to avoid false positives with BuyContract when "BUY" appears in other contexts
+    if ("DISTRIBUTION STATEMENT" in upper_text or "DISTRIBUTION ADVICE" in upper_text or "DISTRIBUTION PAYMENT" in upper_text) and best_match != "CallAndDistributionStatement":
+        # Strong indicator of DistributionStatement
+        distribution_hints = ["DISTRIBUTION", "PAYMENT DATE", "RECORD DATE", "DISTRIBUTION RATE", "HOLDING BALANCE", "GROSS DISTRIBUTION", "NET DISTRIBUTION"]
+        hint_count = sum(1 for hint in distribution_hints if hint in upper_text)
+        distribution_score = 90 + hint_count * 5
+        if distribution_score > best_score:
+            best_match = "DistributionStatement"
+            best_score = distribution_score
+    
     for doc_type, patterns in DOC_TYPE_PATTERNS.items():
+        # Skip if we already found CallAndDistributionStatement or DistributionStatement with high confidence
+        if (best_match == "CallAndDistributionStatement" and best_score >= 95) or (best_match == "DistributionStatement" and best_score >= 90):
+            continue
+            
         score = 0
         must_matches = [m for m in patterns["must"] if m.upper() in upper_text]
         hint_matches = [h for h in patterns["hints"] if h.upper() in upper_text]
         
-        if len(must_matches) == len(patterns["must"]):
-            score = 80 + len(hint_matches) * 5
-        elif len(must_matches) > 0:
-            score = 50 + len(hint_matches) * 5
-        elif len(hint_matches) > 0:
-            score = 30 + len(hint_matches) * 5
+        # For BuyContract, require more specific indicators to avoid false positives
+        if doc_type == "BuyContract":
+            # Require at least one of: "BUY CONFIRMATION", "We have bought", or multiple strong hints
+            has_buy_confirmation = "BUY CONFIRMATION" in upper_text or "WE HAVE BOUGHT" in upper_text
+            strong_hints = ["BUY CONFIRMATION", "TRADE CONFIRMATION", "CONSIDERATION", "BROKERAGE", "TRANSACTION TYPE: BUY"]
+            strong_hint_count = sum(1 for hint in strong_hints if hint in upper_text)
+            
+            if has_buy_confirmation:
+                score = 85 + len(hint_matches) * 5
+            elif "BUY" in upper_text and strong_hint_count >= 2:
+                score = 70 + len(hint_matches) * 5
+            elif "BUY" in upper_text:
+                score = 40 + len(hint_matches) * 3  # Lower score for just "BUY"
+        else:
+            # Standard scoring for other document types
+            if len(must_matches) == len(patterns["must"]):
+                score = 80 + len(hint_matches) * 5
+            elif len(must_matches) > 0:
+                score = 50 + len(hint_matches) * 5
+            elif len(hint_matches) > 0:
+                score = 30 + len(hint_matches) * 5
         
         if score > 0 and score > best_score:
             best_match = doc_type
@@ -297,8 +356,34 @@ def extract_account_last4(text: str) -> Optional[str]:
     return None
 
 
+def title_case(text: Optional[str]) -> str:
+    """Convert string to Title Case without dashes (e.g., 'Anacacia Capital' -> 'AnacaciaCapital')"""
+    if not text:
+        return "Unknown"
+    
+    # Remove company suffixes (Pty Ltd, Limited, etc.)
+    # Common variations: Pty Ltd, Pty. Ltd., PTY LTD, Limited, Ltd, Ltd.
+    text = re.sub(r'\b(?:Pty\.?\s*Ltd\.?|PTY\.?\s*LTD\.?|Limited|Ltd\.?)\b', '', text, flags=re.IGNORECASE)
+    
+    # Clean up: remove special characters except spaces, hyphens, and alphanumeric
+    text = re.sub(r"[^\w\s-]", "", text)
+    
+    # Split by spaces and hyphens, then capitalize each word
+    words = re.split(r'[\s-]+', text)
+    title_words = []
+    for word in words:
+        if word:
+            # Capitalize first letter, lowercase the rest
+            title_words.append(word[0].upper() + word[1:].lower() if len(word) > 1 else word.upper())
+    
+    # Join without separators (remove dashes)
+    result = ''.join(title_words)
+    
+    return result if result else "Unknown"
+
+
 def slugify(text: Optional[str]) -> str:
-    """Convert string to URL-friendly slug"""
+    """Convert string to URL-friendly slug (kept for backward compatibility)"""
     if not text:
         return "unknown"
     
@@ -326,14 +411,39 @@ def build_filename(fields: Dict[str, Optional[str]]) -> str:
     else:
         parts.append("YYYY-MM-DD")
     
-    # Issuer slug
-    issuer_slug = slugify(fields.get("issuer"))
-    parts.append(issuer_slug)
+    # Issuer in Title Case (no dashes)
+    issuer_title = title_case(fields.get("issuer"))
+    parts.append(issuer_title)
     
-    # Document type
+    # Document type in Title Case (no dashes)
     doc_type = fields.get("doc_type", "unknown")
-    doc_type_slug = slugify(doc_type.replace("Statement", "").replace("Contract", ""))
-    parts.append(doc_type_slug)
+    
+    # Special handling for CallAndDistributionStatement
+    if doc_type == "CallAndDistributionStatement":
+        doc_type_title = "DistributionAndCapitalCallStatement"
+    elif doc_type == "DistributionStatement":
+        doc_type_title = "DistributionStatement"
+    elif doc_type == "DividendStatement":
+        doc_type_title = "DividendStatement"
+    elif doc_type == "BuyContract":
+        doc_type_title = "BuyContract"
+    elif doc_type == "SellContract":
+        doc_type_title = "SellContract"
+    elif doc_type == "HoldingStatement":
+        doc_type_title = "HoldingStatement"
+    elif doc_type == "TaxStatement":
+        doc_type_title = "TaxStatement"
+    elif doc_type == "BankStatement":
+        doc_type_title = "BankStatement"
+    elif doc_type == "PeriodicStatement":
+        doc_type_title = "PeriodicStatement"
+    elif doc_type == "NetAssetSummaryStatement":
+        doc_type_title = "NetAssetSummaryStatement"
+    else:
+        # For unknown types, convert to Title Case
+        doc_type_title = title_case(doc_type.replace("Statement", "").replace("Contract", ""))
+    
+    parts.append(doc_type_title)
     
     # Do NOT include account last 4 digits
     
@@ -373,7 +483,8 @@ async def ocr_extract(
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid authorization header")
     
-    if not file.filename.endswith(".pdf"):
+    # Check file extension (case-insensitive)
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="File must be a PDF")
     
     temp_dir = tempfile.mkdtemp()
@@ -385,44 +496,95 @@ async def ocr_extract(
         with open(temp_input, "wb") as f:
             shutil.copyfileobj(file.file, f)
         
-        # Always run OCR for all PDFs (force OCR and LLM processing)
-        pages_to_check = min(3, len(fitz.open(temp_input)))
+        # Smart OCR: Check if PDF has text layer first, only OCR if needed
+        pages_to_check = min(2, len(fitz.open(temp_input)))  # Reduced from 3 to 2 pages
         fitz.open(temp_input).close()
         
         ocred = False
         text_content = ""
         
-        # Always run OCR on all PDFs
-        try:
-            ocrmypdf.ocr(
-                temp_input,
-                temp_output,
-                rotate_pages=True,
-                deskew=True,
-                clean=True,
-                optimize=3,
-                language="eng",
-                force_ocr=True  # Force OCR even if text layer exists
-            )
-            ocred = True
-            
-            # Extract text from OCR'd PDF
-            doc = fitz.open(temp_output)
-            for page_num in range(pages_to_check):
-                page = doc[page_num]
-                text_content += page.get_text() + "\n"
-            doc.close()
-        except Exception as e:
-            # If OCR fails, try to extract what we can from original
-            print(f"OCR failed, trying original text: {e}")
-            doc = fitz.open(temp_input)
-            for page_num in range(pages_to_check):
-                page = doc[page_num]
-                text_content += page.get_text() + "\n"
-            doc.close()
+        # Check if PDF has sufficient text layer
+        doc_initial = fitz.open(temp_input)
+        has_text_layer = False
+        initial_text = ""
+        for page_num in range(pages_to_check):
+            page = doc_initial[page_num]
+            page_text = page.get_text()
+            initial_text += page_text + "\n"
+            if len(page_text.strip()) > 100:  # Has sufficient text
+                has_text_layer = True
+        doc_initial.close()
+        
+        if has_text_layer:
+            # PDF already has text layer, skip OCR for speed
+            print(f"PDF has text layer, skipping OCR for {file.filename}")
+            text_content = initial_text
+        else:
+            # No text layer or insufficient text, run OCR
+            print(f"PDF lacks text layer, running OCR for {file.filename}")
+            try:
+                ocrmypdf.ocr(
+                    temp_input,
+                    temp_output,
+                    rotate_pages=True,
+                    deskew=True,
+                    clean=True,
+                    optimize=1,  # Reduced from 3 to 1 for faster processing
+                    language="eng",
+                    force_ocr=True
+                )
+                ocred = True
+                
+                # Extract text from OCR'd PDF
+                doc = fitz.open(temp_output)
+                for page_num in range(pages_to_check):
+                    page = doc[page_num]
+                    text_content += page.get_text() + "\n"
+                doc.close()
+            except Exception as e:
+                # If OCR fails, try to extract what we can from original
+                print(f"OCR failed, trying original text: {e}")
+                text_content = initial_text
         
         # Check if we got text (for has_text flag)
         has_text_layer = len(text_content.strip()) >= 50
+        
+        # Generate file hash for caching
+        file_hash = hashlib.sha256(text_content.encode('utf-8')).hexdigest()[:16]
+        
+        # Check cache first, but validate cached result
+        if file_hash in _file_cache:
+            cached_result = _file_cache[file_hash]
+            cached_doc_type = cached_result["fields"].get("doc_type")
+            cached_filename = cached_result.get("suggested_filename", "")
+            
+            # Validate cached result - check if CallAndDistributionStatement/DistributionStatement was incorrectly cached as BuyContract
+            upper_text_check = text_content.upper()
+            is_call_and_distribution_check = ("CALL AND DISTRIBUTION STATEMENT" in upper_text_check or 
+                                             "CALL & DISTRIBUTION STATEMENT" in upper_text_check)
+            is_distribution_statement_check = (("DISTRIBUTION STATEMENT" in upper_text_check or 
+                                               "DISTRIBUTION ADVICE" in upper_text_check or 
+                                               "DISTRIBUTION PAYMENT" in upper_text_check) and not is_call_and_distribution_check)
+            
+            if (is_call_and_distribution_check or is_distribution_statement_check) and cached_doc_type == "BuyContract":
+                # Cache has wrong classification, invalidate and reprocess
+                doc_type_name = "CallAndDistributionStatement" if is_call_and_distribution_check else "DistributionStatement"
+                print(f"Cache invalidated - {doc_type_name} was incorrectly cached as BuyContract for {file.filename}")
+                del _file_cache[file_hash]
+            elif (is_call_and_distribution_check or is_distribution_statement_check) and "buy-contract" in cached_filename.lower():
+                # Filename is wrong even if doc_type is correct, invalidate cache
+                print(f"Cache invalidated - filename contains wrong document type for {file.filename}")
+                del _file_cache[file_hash]
+            else:
+                # Cache is valid
+                print(f"Cache hit for {file.filename}")
+                return OCRResponse(
+                    has_text=has_text_layer,
+                    ocred=ocred,
+                    pages_used=pages_to_check,
+                    fields=cached_result["fields"],
+                    suggested_filename=cached_result["suggested_filename"]
+                )
         
         # Always use LLM for classification and extraction if available
         fields = {
@@ -432,12 +594,70 @@ async def ocr_extract(
             "date_iso": None,
             "account_last4": None
         }
+        suggested_filename = None
         
-        # Primary: Use LLM for all PDFs if available
-        if LLM_AVAILABLE and extract_with_llm:
+        # CRITICAL: Check for Call and Distribution Statement and Distribution Statement FIRST before LLM processing
+        # This ensures we catch it early and prevent LLM from misclassifying
+        upper_text = text_content.upper()
+        is_call_and_distribution = ("CALL AND DISTRIBUTION STATEMENT" in upper_text or 
+                                    "CALL & DISTRIBUTION STATEMENT" in upper_text)
+        is_distribution_statement = (("DISTRIBUTION STATEMENT" in upper_text or 
+                                     "DISTRIBUTION ADVICE" in upper_text or 
+                                     "DISTRIBUTION PAYMENT" in upper_text) and not is_call_and_distribution)
+        
+        # Always use LLM for classification and extraction if available
+        fields = {
+            "doc_type": None,
+            "issuer": None,
+            "asx_code": None,
+            "date_iso": None,
+            "account_last4": None
+        }
+        suggested_filename = None
+        
+        # Try combined LLM call first (faster - single HTTP request)
+        if LLM_AVAILABLE and extract_and_suggest_filename_with_llm:
+            combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=4000)
+            if combined_result:
+                fields.update({
+                    "doc_type": combined_result.get("doc_type"),
+                    "issuer": combined_result.get("issuer"),
+                    "asx_code": combined_result.get("asx_code"),
+                    "date_iso": combined_result.get("date_iso"),
+                    "account_last4": combined_result.get("account_last4")
+                })
+                suggested_filename = combined_result.get("suggested_filename")
+                
+                # IMMEDIATE CORRECTION: If this is clearly a Call and Distribution Statement or Distribution Statement, override LLM
+                if is_call_and_distribution:
+                    if fields.get("doc_type") != "CallAndDistributionStatement":
+                        print(f"IMMEDIATE CORRECTION: LLM returned {fields.get('doc_type')}, forcing CallAndDistributionStatement for {file.filename}")
+                    fields["doc_type"] = "CallAndDistributionStatement"
+                    # Regenerate filename if it's wrong
+                    if suggested_filename and ("buy-contract" in suggested_filename.lower() or "sell-contract" in suggested_filename.lower()):
+                        suggested_filename = None  # Force regeneration
+                elif is_distribution_statement:
+                    if fields.get("doc_type") != "DistributionStatement":
+                        print(f"IMMEDIATE CORRECTION: LLM returned {fields.get('doc_type')}, forcing DistributionStatement for {file.filename}")
+                    fields["doc_type"] = "DistributionStatement"
+                    # Regenerate filename if it's wrong
+                    if suggested_filename and ("buy-contract" in suggested_filename.lower() or "sell-contract" in suggested_filename.lower()):
+                        suggested_filename = None  # Force regeneration
+        
+        # Fallback: Use separate LLM calls if combined call not available or failed
+        if not suggested_filename and LLM_AVAILABLE and extract_with_llm:
             llm_fields = extract_with_llm(text_content)
             if llm_fields:
                 fields.update(llm_fields)
+                # IMMEDIATE CORRECTION: If this is clearly a Call and Distribution Statement or Distribution Statement, override LLM
+                if is_call_and_distribution:
+                    if fields.get("doc_type") != "CallAndDistributionStatement":
+                        print(f"IMMEDIATE CORRECTION: LLM returned {fields.get('doc_type')}, forcing CallAndDistributionStatement for {file.filename}")
+                    fields["doc_type"] = "CallAndDistributionStatement"
+                elif is_distribution_statement:
+                    if fields.get("doc_type") != "DistributionStatement":
+                        print(f"IMMEDIATE CORRECTION: LLM returned {fields.get('doc_type')}, forcing DistributionStatement for {file.filename}")
+                    fields["doc_type"] = "DistributionStatement"
         
         # Fallback: Use rule-based approach if LLM not available or failed
         # Also re-extract date using rules if LLM date seems incorrect or missing
@@ -446,6 +666,21 @@ async def ocr_extract(
         rule_based_date = extract_date(text_content, doc_type or fields.get("doc_type"))
         account_last4 = extract_account_last4(text_content)
         
+        # CRITICAL: Force CallAndDistributionStatement or DistributionStatement if rule-based classification detects it
+        # This overrides any incorrect LLM classification
+        if is_call_and_distribution:
+            if doc_type == "CallAndDistributionStatement":
+                # Force CallAndDistributionStatement - override LLM if it was wrong
+                if fields.get("doc_type") != "CallAndDistributionStatement":
+                    print(f"Force corrected doc_type from {fields.get('doc_type')} to CallAndDistributionStatement for {file.filename}")
+                fields["doc_type"] = "CallAndDistributionStatement"
+        elif is_distribution_statement:
+            if doc_type == "DistributionStatement":
+                # Force DistributionStatement - override LLM if it was wrong
+                if fields.get("doc_type") != "DistributionStatement":
+                    print(f"Force corrected doc_type from {fields.get('doc_type')} to DistributionStatement for {file.filename}")
+                fields["doc_type"] = "DistributionStatement"
+        
         # Extract ASX code from text if not provided by LLM
         if not fields["asx_code"]:
             asx_match = re.search(r'\b(?:ASX\s+Code|Code)[:\s]+([A-Z]{3,6})\b', text_content, re.IGNORECASE)
@@ -453,8 +688,34 @@ async def ocr_extract(
                 fields["asx_code"] = asx_match.group(1).upper()
         
         # Fill in missing fields from rule-based extraction
+        # But prioritize rule-based CallAndDistributionStatement/DistributionStatement over LLM BuyContract
         if not fields["doc_type"]:
             fields["doc_type"] = doc_type
+        elif fields.get("doc_type") == "BuyContract" and (doc_type == "CallAndDistributionStatement" or is_call_and_distribution):
+            # Rule-based says CallAndDistributionStatement, but LLM said BuyContract - trust rules
+            fields["doc_type"] = "CallAndDistributionStatement"
+            print(f"Corrected LLM BuyContract to CallAndDistributionStatement for {file.filename}")
+            # Invalidate suggested filename if it contains wrong document type
+            if suggested_filename and "buy-contract" in suggested_filename.lower():
+                suggested_filename = None
+        elif fields.get("doc_type") == "BuyContract" and (doc_type == "DistributionStatement" or is_distribution_statement):
+            # Rule-based says DistributionStatement, but LLM said BuyContract - trust rules
+            fields["doc_type"] = "DistributionStatement"
+            print(f"Corrected LLM BuyContract to DistributionStatement for {file.filename}")
+            # Invalidate suggested filename if it contains wrong document type
+            if suggested_filename and "buy-contract" in suggested_filename.lower():
+                suggested_filename = None
+        elif is_call_and_distribution:
+            # Final safety check: if text clearly says Call and Distribution Statement, force it
+            fields["doc_type"] = "CallAndDistributionStatement"
+            if suggested_filename and ("buy-contract" in suggested_filename.lower() or "sell-contract" in suggested_filename.lower()):
+                suggested_filename = None
+        elif is_distribution_statement:
+            # Final safety check: if text clearly says Distribution Statement, force it
+            fields["doc_type"] = "DistributionStatement"
+            if suggested_filename and ("buy-contract" in suggested_filename.lower() or "sell-contract" in suggested_filename.lower()):
+                suggested_filename = None
+        
         if not fields["issuer"]:
             fields["issuer"] = issuer
         if not fields["account_last4"]:
@@ -467,21 +728,122 @@ async def ocr_extract(
             # use rule-based date. For dividend statements, Payment Date is usually more relevant.
             if not fields["date_iso"]:
                 fields["date_iso"] = rule_based_date
-            elif fields.get("doc_type") == "DividendStatement" or fields.get("doc_type") == "DistributionStatement":
-                # For dividend/distribution statements, prefer rule-based date (which prioritizes Payment Date)
+            elif fields.get("doc_type") == "DividendStatement" or fields.get("doc_type") == "DistributionStatement" or fields.get("doc_type") == "CallAndDistributionStatement" or fields.get("doc_type") == "NetAssetSummaryStatement":
+                # For dividend/distribution/call-and-distribution/net-asset-summary statements, prefer rule-based date (which prioritizes Payment Date)
                 fields["date_iso"] = rule_based_date
             # Otherwise, keep LLM date if it exists
         
-        # Build filename - always try LLM first if available (with full text context)
-        suggested_filename = None
-        if LLM_AVAILABLE and suggest_filename_with_llm:
-            # Pass more context to LLM for better filename generation (use more text to capture fund names)
-            # Use first 5000 chars to ensure we capture fund names that might be further down in the document
-            suggested_filename = suggest_filename_with_llm(fields, text_content[:5000])
+        # Build filename
+        # CRITICAL: Prioritize LLM for filename generation, but ensure Title Case format (no dashes)
+        # LLM is smarter at determining document types and names, so we trust it more
+        if not suggested_filename:
+            # Try LLM first for all document types (LLM is smart enough)
+            if LLM_AVAILABLE and suggest_filename_with_llm:
+                print(f"Using LLM for filename generation: {file.filename}")
+                llm_filename = suggest_filename_with_llm(fields, text_content[:4000])
+                if llm_filename:
+                    suggested_filename = llm_filename
         
-        # Fallback to rule-based filename if LLM didn't provide one
+        # Convert LLM filename to Title Case format if needed (remove dashes, ensure proper capitalization)
+        if suggested_filename:
+            # Check if filename needs conversion to Title Case format
+            filename_no_ext = suggested_filename.replace(".pdf", "")
+            needs_conversion = False
+            
+            # Check for old format indicators
+            if " " in filename_no_ext:  # Has spaces instead of underscores
+                needs_conversion = True
+            elif "_" in filename_no_ext:
+                parts = filename_no_ext.split("_")
+                # Check if any part (except date) has dashes or is lowercase
+                for i, part in enumerate(parts):
+                    if i > 0:  # Skip date part (index 0)
+                        if "-" in part or (part and part[0].islower()):
+                            needs_conversion = True
+                            break
+            
+            if needs_conversion:
+                print(f"Converting LLM filename '{suggested_filename}' to Title Case format for {file.filename}")
+                suggested_filename = build_filename(fields)
+        
+        # Final fallback to rule-based filename
         if not suggested_filename:
             suggested_filename = build_filename(fields)
+        
+        # Ensure filename is in Title Case format (no dashes except in date, use underscores not spaces)
+        # Check if filename contains dashes or spaces in issuer or doc_type parts (not date)
+        if suggested_filename:
+            # Normalize: replace spaces with underscores first
+            if " " in suggested_filename:
+                suggested_filename = suggested_filename.replace(" ", "_")
+            
+            # Check for old format (dashes in non-date parts)
+            parts = suggested_filename.replace(".pdf", "").split("_")
+            needs_regeneration = False
+            
+            if len(parts) >= 2:
+                # Check issuer part (second part) - should not have dashes
+                if "-" in parts[1]:
+                    print(f"Converting issuer part '{parts[1]}' (contains dashes) to Title Case format for {file.filename}")
+                    needs_regeneration = True
+                # Check doc_type part (third part if exists) - should not have dashes
+                elif len(parts) >= 3 and "-" in parts[2]:
+                    print(f"Converting doc_type part '{parts[2]}' (contains dashes) to Title Case format for {file.filename}")
+                    needs_regeneration = True
+            
+            if needs_regeneration:
+                suggested_filename = build_filename(fields)
+        
+        # Final safety check: if filename contains wrong document type or old format (with dashes), regenerate using rule-based
+        # Also convert any LLM-generated filenames to Title Case format (no dashes)
+        if suggested_filename:
+            # Check for dashes in non-date parts (date starts with YYYY or 20XX)
+            filename_no_ext = suggested_filename.replace(".pdf", "")
+            if "_" in filename_no_ext:
+                parts = filename_no_ext.split("_")
+                # Check parts after date (issuer and doc_type should not have dashes)
+                for i, part in enumerate(parts):
+                    if i > 0 and "-" in part:  # Skip date part (index 0)
+                        print(f"FINAL SAFETY CHECK: Filename '{suggested_filename}' contains dashes in part '{part}' (old format), regenerating with Title Case format for {file.filename}")
+                        suggested_filename = build_filename(fields)
+                        break
+        
+        if fields.get("doc_type") == "CallAndDistributionStatement":
+            if suggested_filename and ("BuyContract" in suggested_filename or "SellContract" in suggested_filename or "buy-contract" in suggested_filename.lower() or "sell-contract" in suggested_filename.lower()):
+                print(f"FINAL SAFETY CHECK: Regenerating filename - detected wrong document type '{suggested_filename}' for CallAndDistributionStatement in {file.filename}")
+                suggested_filename = build_filename(fields)
+            # Double check - ensure filename contains DistributionAndCapitalCallStatement (new format)
+            elif suggested_filename and "DistributionAndCapitalCallStatement" not in suggested_filename:
+                # If doc_type is CallAndDistributionStatement but filename doesn't match, regenerate
+                print(f"FINAL SAFETY CHECK: Filename '{suggested_filename}' doesn't contain 'DistributionAndCapitalCallStatement', regenerating for {file.filename}")
+                suggested_filename = build_filename(fields)
+        elif fields.get("doc_type") == "DistributionStatement":
+            if suggested_filename and ("BuyContract" in suggested_filename or "SellContract" in suggested_filename or "buy-contract" in suggested_filename.lower() or "sell-contract" in suggested_filename.lower()):
+                print(f"FINAL SAFETY CHECK: Regenerating filename - detected wrong document type '{suggested_filename}' for DistributionStatement in {file.filename}")
+                suggested_filename = build_filename(fields)
+            # Double check - ensure filename contains DistributionStatement (new format, no dashes)
+            elif suggested_filename and "DistributionStatement" not in suggested_filename:
+                # If doc_type is DistributionStatement but filename doesn't match, regenerate
+                print(f"FINAL SAFETY CHECK: Filename '{suggested_filename}' doesn't contain 'DistributionStatement', regenerating for {file.filename}")
+                suggested_filename = build_filename(fields)
+        
+        # Cache the result
+        _file_cache[file_hash] = {
+            "fields": {
+                "doc_type": fields.get("doc_type"),
+                "issuer": fields.get("issuer"),
+                "date_iso": fields.get("date_iso"),
+                "account_last4": fields.get("account_last4"),
+                "asx_code": fields.get("asx_code")
+            },
+            "suggested_filename": suggested_filename
+        }
+        
+        # Limit cache size to prevent memory issues (keep last 100 entries)
+        if len(_file_cache) > 100:
+            # Remove oldest entry (simple FIFO)
+            oldest_key = next(iter(_file_cache))
+            del _file_cache[oldest_key]
         
         # Ensure response only includes expected fields (remove asx_code from response if needed)
         response_fields = {
@@ -500,7 +862,15 @@ async def ocr_extract(
             suggested_filename=suggested_filename
         )
     
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
+        # Log the full error for debugging
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"OCR processing error: {str(e)}")
+        print(f"Traceback: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
     
     finally:

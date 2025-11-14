@@ -8,7 +8,7 @@ import { extractText, needsOCR } from '@/lib/pdf/extractText';
 import { classify, DetectedFields } from '@/lib/pdf/classify';
 import { buildFilename, generateFileHash } from '@/lib/pdf/filename';
 
-const MAX_CONCURRENT = 5;
+const MAX_CONCURRENT = 10; // Increased from 5 to 10 for better throughput
 
 export default function Home() {
   const [files, setFiles] = useState<ProcessedFile[]>([]);
@@ -163,7 +163,9 @@ export default function Home() {
         });
         
         if (!response.ok) {
-          throw new Error(`OCR request failed: ${response.statusText}`);
+          const errorText = await response.text();
+          const errorMessage = errorText || response.statusText;
+          throw new Error(`OCR request failed: ${response.status} ${response.statusText}. ${errorMessage}`);
         }
         
         const result = await response.json();
