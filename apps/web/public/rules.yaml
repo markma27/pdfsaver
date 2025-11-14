@@ -1,0 +1,68 @@
+types:
+  DividendStatement:
+    must: ["Dividend statement", "Distribution statement"]
+    hints: ["Record Date", "Payment Date", "DRP", "Dividend Reinvestment"]
+  BuyContract:
+    must: ["CONTRACT NOTE", "BUY"]
+    hints: ["Purchase", "Acquisition"]
+  SellContract:
+    must: ["CONTRACT NOTE", "SELL"]
+    hints: ["Sale", "Disposal"]
+  HoldingStatement:
+    must: ["CHESS", "Issuer Sponsored", "SRN", "HIN"]
+    hints: ["Holder Identification Number", "Statement Date", "Holdings"]
+  TaxStatement:
+    must: ["Annual Tax Statement", "Tax Summary", "AMMA", "AMIT"]
+    hints: ["Tax Year", "Assessable Income"]
+
+issuers:
+  canonical:
+    - Computershare
+    - "Link Market Services"
+    - Automic
+    - BoardRoom
+    - CommSec
+    - "CMC Markets"
+    - nabtrade
+    - "Bell Potter"
+    - Vanguard
+    - iShares
+    - BlackRock
+    - Betashares
+    - Magellan
+  normalize:
+    "Computershare Limited": "Computershare"
+    "Link Market Services Limited": "Link Market Services"
+    "CMC Markets Stockbroking": "CMC Markets"
+    "Bell Potter Securities": "Bell Potter"
+    "BlackRock Investment Management": "BlackRock"
+    "iShares by BlackRock": "iShares"
+
+date_priorities:
+  DividendStatement:
+    - "Payment Date"
+    - "Record Date"
+    - "Statement Date"
+    - "Date"
+  BuyContract:
+    - "Trade Date"
+    - "Settlement Date"
+    - "Statement Date"
+    - "Date"
+  SellContract:
+    - "Trade Date"
+    - "Settlement Date"
+    - "Statement Date"
+    - "Date"
+  HoldingStatement:
+    - "Statement Date"
+    - "Date"
+  TaxStatement:
+    - "Statement Date"
+    - "Tax Year"
+    - "Date"
+
+account_patterns:
+  - "(?i)(?:HIN|SRN|Account|Holder(?:\\s+ID)?)[:\\s]*([A-Z0-9-]{6,})"
+  - "(?i)(?:Account\\s+Number|Account\\s+No\\.?)[:\\s]*([A-Z0-9-]{6,})"
+

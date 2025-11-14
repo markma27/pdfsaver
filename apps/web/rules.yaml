@@ -1,0 +1,84 @@
+types:
+  DividendStatement:
+    must: ["Dividend statement"]
+    hints: ["Record Date", "Payment Date", "DRP", "Dividend Reinvestment", "Dividend"]
+  DistributionStatement:
+    must: ["Distribution statement", "Distribution Advice", "Distribution Payment"]
+    hints: ["Distribution", "Payment date", "Record date", "ETF", "Managed Fund"]
+  BankStatement:
+    must: ["Bank Statement", "Account Statement", "Statement of Account"]
+    hints: ["Account Number", "BSB", "Transaction", "Balance", "Bank"]
+  BuyContract:
+    must: ["CONTRACT NOTE", "BUY"]
+    hints: ["Purchase", "Acquisition", "Buy Order"]
+  SellContract:
+    must: ["CONTRACT NOTE", "SELL"]
+    hints: ["Sale", "Disposal", "Sell Order"]
+  HoldingStatement:
+    must: ["CHESS", "Issuer Sponsored", "SRN", "HIN"]
+    hints: ["Holder Identification Number", "Statement Date", "Holdings", "Portfolio"]
+  TaxStatement:
+    must: ["Annual Tax Statement", "Tax Summary", "AMMA", "AMIT"]
+    hints: ["Tax Year", "Assessable Income", "Tax Return"]
+
+issuers:
+  canonical:
+    - Computershare
+    - "Link Market Services"
+    - Automic
+    - BoardRoom
+    - CommSec
+    - "CMC Markets"
+    - nabtrade
+    - "Bell Potter"
+    - Vanguard
+    - iShares
+    - BlackRock
+    - Betashares
+    - Magellan
+  normalize:
+    "Computershare Limited": "Computershare"
+    "Link Market Services Limited": "Link Market Services"
+    "CMC Markets Stockbroking": "CMC Markets"
+    "Bell Potter Securities": "Bell Potter"
+    "BlackRock Investment Management": "BlackRock"
+    "iShares by BlackRock": "iShares"
+
+date_priorities:
+  DividendStatement:
+    - "Payment Date"
+    - "Record Date"
+    - "Statement Date"
+    - "Date"
+  DistributionStatement:
+    - "Payment Date"
+    - "Record Date"
+    - "Distribution Date"
+    - "Statement Date"
+    - "Date"
+  BankStatement:
+    - "Statement Date"
+    - "Period End"
+    - "Date"
+  BuyContract:
+    - "Trade Date"
+    - "Settlement Date"
+    - "Statement Date"
+    - "Date"
+  SellContract:
+    - "Trade Date"
+    - "Settlement Date"
+    - "Statement Date"
+    - "Date"
+  HoldingStatement:
+    - "Statement Date"
+    - "Date"
+  TaxStatement:
+    - "Statement Date"
+    - "Tax Year"
+    - "Date"
+
+account_patterns:
+  - "(?i)(?:HIN|SRN|Account|Holder(?:\\s+ID)?)[:\\s]*([A-Z0-9-]{6,})"
+  - "(?i)(?:Account\\s+Number|Account\\s+No\\.?)[:\\s]*([A-Z0-9-]{6,})"
+
