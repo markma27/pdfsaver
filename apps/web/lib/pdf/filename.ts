@@ -6,17 +6,24 @@ import { DetectedFields } from './classify';
 export function slugify(text: string | null): string {
   if (!text) return 'unknown';
   
-  return text
+  // Remove company suffixes (Pty Ltd, Limited, etc.)
+  // Common variations: Pty Ltd, Pty. Ltd., PTY LTD, Limited, Ltd, Ltd.
+  let cleaned = text.replace(/\b(?:Pty\.?\s*Ltd\.?|PTY\.?\s*LTD\.?|Limited|Ltd\.?)\b/gi, '');
+  
+  // Clean up and convert to slug
+  cleaned = cleaned
     .toLowerCase()
     .replace(/[^\w\s-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .trim();
+  
+  return cleaned || 'unknown';
 }
 
 /**
  * Build suggested filename from detected fields
- * Format: YYYY-MM-DD_{issuer_slug}_{doc_type}_{account_last4}.pdf
+ * Format: YYYY-MM-DD_{issuer_slug}_{doc_type}.pdf
  */
 export function buildFilename(fields: DetectedFields): string {
   const parts: string[] = [];
@@ -38,12 +45,7 @@ export function buildFilename(fields: DetectedFields): string {
     : 'unknown';
   parts.push(docTypeSlug);
   
-  // Account last 4
-  if (fields.account_last4) {
-    parts.push(fields.account_last4);
-  } else {
-    parts.push('XXXX');
-  }
+  // Do NOT include account last 4 digits
   
   return `${parts.join('_')}.pdf`;
 }

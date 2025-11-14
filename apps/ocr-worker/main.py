@@ -214,10 +214,21 @@ def extract_date(text: str, doc_type: Optional[str]) -> Optional[str]:
 
 def extract_labeled_date(text: str, label: str) -> Optional[str]:
     """Extract date with specific label"""
-    pattern = rf"(?i){re.escape(label)}[:\s]+(\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}|\d{{4}}[/-]\d{{1,2}}[/-]\d{{1,2}}|\d{{1,2}}\s+\w+\s+\d{{4}})"
-    match = re.search(pattern, text)
-    if match:
-        return parse_date(match.group(1))
+    # More flexible pattern to match various date formats after the label
+    # Matches: "Payment Date: 15/05/2024", "Record Date 02/04/2024", etc.
+    patterns = [
+        rf"(?i){re.escape(label)}[:\s]+(\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{4}})",  # DD/MM/YYYY or DD-MM-YYYY
+        rf"(?i){re.escape(label)}[:\s]+(\d{{4}}[/-]\d{{1,2}}[/-]\d{{1,2}})",  # YYYY-MM-DD
+        rf"(?i){re.escape(label)}[:\s]+(\d{{1,2}}\s+\w+\s+\d{{4}})",  # DD Month YYYY
+        rf"(?i){re.escape(label)}[:\s]+(\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2}})",  # DD/MM/YY (2-digit year)
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            parsed = parse_date(match.group(1))
+            if parsed:
+                return parsed
     return None
 
 
@@ -240,19 +251,34 @@ def extract_generic_date(text: str) -> Optional[str]:
 
 
 def parse_date(date_str: str) -> Optional[str]:
-    """Parse date string to ISO format (YYYY-MM-DD)"""
+    """Parse date string to ISO format (YYYY-MM-DD)
+    Prioritizes Australian date format (DD/MM/YYYY) over US format (MM/DD/YYYY)
+    """
+    # Clean up the date string
+    date_str = date_str.strip()
+    
+    # Try Australian format first (DD/MM/YYYY or DD-MM-YYYY) - most common in Australian financial docs
     formats = [
-        "%Y-%m-%d",
-        "%d-%m-%Y",
-        "%m/%d/%Y",
-        "%d/%m/%Y",
-        "%d %B %Y",
-        "%d %b %Y"
+        "%d/%m/%Y",      # 15/05/2024 -> 2024-05-15
+        "%d-%m-%Y",      # 15-05-2024 -> 2024-05-15
+        "%d/%m/%y",      # 15/05/24 -> 2024-05-15 (assume 20xx for 2-digit years)
+        "%d %B %Y",      # 15 May 2024 -> 2024-05-15
+        "%d %b %Y",      # 15 May 2024 -> 2024-05-15
+        "%Y-%m-%d",      # 2024-05-15 -> 2024-05-15 (ISO format)
+        "%Y/%m/%d",      # 2024/05/15 -> 2024-05-15
+        # US formats (lower priority, but included for compatibility)
+        "%m/%d/%Y",      # 05/15/2024 -> 2024-05-15
+        "%m-%d-%Y",      # 05-15-2024 -> 2024-05-15
     ]
     
     for fmt in formats:
         try:
             dt = datetime.strptime(date_str, fmt)
+            # Handle 2-digit years: assume 20xx for years < 50, 19xx for years >= 50
+            if fmt == "%d/%m/%y" or fmt == "%d-%m-%y":
+                year = dt.year
+                if year < 1950:
+                    dt = dt.replace(year=year + 100)
             return dt.strftime("%Y-%m-%d")
         except ValueError:
             continue
@@ -275,7 +301,19 @@ def slugify(text: Optional[str]) -> str:
     """Convert string to URL-friendly slug"""
     if not text:
         return "unknown"
-    return re.sub(r"[^\w\s-]", "", text.lower()).replace(" ", "-").replace("-+", "-").strip("-")
+    
+    # Remove company suffixes (Pty Ltd, Limited, etc.)
+    # Common variations: Pty Ltd, Pty. Ltd., PTY LTD, Limited, Ltd, Ltd.
+    text = re.sub(r'\b(?:Pty\.?\s*Ltd\.?|PTY\.?\s*LTD\.?|Limited|Ltd\.?)\b', '', text, flags=re.IGNORECASE)
+    
+    # Clean up and convert to slug
+    text = re.sub(r"[^\w\s-]", "", text.lower())
+    text = text.replace(" ", "-").replace("-+", "-").strip("-")
+    
+    # Remove multiple consecutive hyphens
+    text = re.sub(r"-+", "-", text)
+    
+    return text if text else "unknown"
 
 
 def build_filename(fields: Dict[str, Optional[str]]) -> str:
@@ -297,11 +335,7 @@ def build_filename(fields: Dict[str, Optional[str]]) -> str:
     doc_type_slug = slugify(doc_type.replace("Statement", "").replace("Contract", ""))
     parts.append(doc_type_slug)
     
-    # Account last 4
-    if fields.get("account_last4"):
-        parts.append(fields["account_last4"])
-    else:
-        parts.append("XXXX")
+    # Do NOT include account last 4 digits
     
     return f"{'_'.join(parts)}.pdf"
 
@@ -406,27 +440,37 @@ async def ocr_extract(
                 fields.update(llm_fields)
         
         # Fallback: Use rule-based approach if LLM not available or failed
-        if not fields["doc_type"] or not fields["issuer"]:
-            doc_type, confidence = classify_doc_type(text_content)
-            issuer = detect_issuer(text_content)
-            date_iso = extract_date(text_content, doc_type)
-            account_last4 = extract_account_last4(text_content)
-            
-            # Extract ASX code from text if not provided by LLM
-            if not fields["asx_code"]:
-                asx_match = re.search(r'\b(?:ASX\s+Code|Code)[:\s]+([A-Z]{3,6})\b', text_content, re.IGNORECASE)
-                if asx_match:
-                    fields["asx_code"] = asx_match.group(1).upper()
-            
-            # Fill in missing fields from rule-based extraction
-            if not fields["doc_type"]:
-                fields["doc_type"] = doc_type
-            if not fields["issuer"]:
-                fields["issuer"] = issuer
+        # Also re-extract date using rules if LLM date seems incorrect or missing
+        doc_type, confidence = classify_doc_type(text_content)
+        issuer = detect_issuer(text_content)
+        rule_based_date = extract_date(text_content, doc_type or fields.get("doc_type"))
+        account_last4 = extract_account_last4(text_content)
+        
+        # Extract ASX code from text if not provided by LLM
+        if not fields["asx_code"]:
+            asx_match = re.search(r'\b(?:ASX\s+Code|Code)[:\s]+([A-Z]{3,6})\b', text_content, re.IGNORECASE)
+            if asx_match:
+                fields["asx_code"] = asx_match.group(1).upper()
+        
+        # Fill in missing fields from rule-based extraction
+        if not fields["doc_type"]:
+            fields["doc_type"] = doc_type
+        if not fields["issuer"]:
+            fields["issuer"] = issuer
+        if not fields["account_last4"]:
+            fields["account_last4"] = account_last4
+        
+        # For date: prefer rule-based extraction if LLM date is missing or seems incorrect
+        # Rule-based extraction prioritizes Payment Date/Record Date which are more reliable
+        if rule_based_date:
+            # If LLM didn't provide a date, or if rule-based date is more recent (likely more accurate),
+            # use rule-based date. For dividend statements, Payment Date is usually more relevant.
             if not fields["date_iso"]:
-                fields["date_iso"] = date_iso
-            if not fields["account_last4"]:
-                fields["account_last4"] = account_last4
+                fields["date_iso"] = rule_based_date
+            elif fields.get("doc_type") == "DividendStatement" or fields.get("doc_type") == "DistributionStatement":
+                # For dividend/distribution statements, prefer rule-based date (which prioritizes Payment Date)
+                fields["date_iso"] = rule_based_date
+            # Otherwise, keep LLM date if it exists
         
         # Build filename - always try LLM first if available (with full text context)
         suggested_filename = None

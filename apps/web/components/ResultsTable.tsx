@@ -19,6 +19,7 @@ export interface ProcessedFile {
 interface ResultsTableProps {
   files: ProcessedFile[];
   onFilenameChange: (id: string, newFilename: string) => void;
+  onDownload?: (id: string) => void;
   onOCRRequest?: (id: string) => void;
   onRemove?: (id: string) => void;
 }
@@ -26,6 +27,7 @@ interface ResultsTableProps {
 export function ResultsTable({
   files,
   onFilenameChange,
+  onDownload,
   onOCRRequest,
   onRemove
 }: ResultsTableProps) {
@@ -90,27 +92,46 @@ export function ResultsTable({
                   {file.originalName}
                 </div>
               </td>
-              <td className="px-6 py-4 text-sm">
+              <td className="px-6 py-4 text-sm text-left align-top">
                 {editingId === file.id ? (
-                  <input
-                    type="text"
-                    value={editValue}
-                    onChange={e => setEditValue(e.target.value)}
-                    onBlur={() => handleEditSave(file.id)}
-                    onKeyDown={e => handleKeyDown(e, file.id)}
-                    className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    autoFocus
-                  />
+                  <div className="flex items-start gap-2">
+                    <input
+                      type="text"
+                      value={editValue}
+                      onChange={e => setEditValue(e.target.value)}
+                      onBlur={() => handleEditSave(file.id)}
+                      onKeyDown={e => handleKeyDown(e, file.id)}
+                      className="flex-1 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-left"
+                      autoFocus
+                    />
+                    <button
+                      onClick={() => handleEditCancel()}
+                      className="text-gray-500 hover:text-gray-700 text-xs px-2 py-1 whitespace-nowrap"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 ) : file.status === 'processing' || file.status === 'ocr-processing' ? (
-                  <span className="text-gray-400 italic">pending...</span>
+                  <span className="text-gray-400 italic text-left">pending...</span>
+                ) : file.status === 'ready' || file.status === 'needs-review' ? (
+                  <div className="flex items-start gap-2">
+                    <button
+                      onClick={() => onDownload && onDownload(file.id)}
+                      className="text-blue-600 hover:text-blue-800 underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded break-words max-w-md text-left"
+                      title="Click to download file"
+                    >
+                      <span className="break-all text-left">{file.editedFilename}</span>
+                    </button>
+                    <button
+                      onClick={() => handleEditStart(file)}
+                      className="text-gray-400 hover:text-gray-600 text-xs px-2 py-1 whitespace-nowrap"
+                      title="Click to edit filename"
+                    >
+                      Edit
+                    </button>
+                  </div>
                 ) : (
-                  <button
-                    onClick={() => handleEditStart(file)}
-                    className="text-blue-600 hover:text-blue-800 underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded break-words max-w-md"
-                    title="Click to edit filename"
-                  >
-                    <span className="break-all">{file.editedFilename}</span>
-                  </button>
+                  <span className="text-gray-400 break-all max-w-md text-left">{file.editedFilename}</span>
                 )}
               </td>
               <td className="px-6 py-4 whitespace-nowrap">

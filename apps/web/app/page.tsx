@@ -350,6 +350,29 @@ export default function Home() {
     setFiles(prev => prev.filter(f => f.id !== id));
   }, []);
   
+  const handleDownloadFile = useCallback(async (id: string) => {
+    const file = files.find(f => f.id === id);
+    if (!file || (file.status !== 'ready' && file.status !== 'needs-review')) {
+      return;
+    }
+    
+    try {
+      const arrayBuffer = await file.originalFile.arrayBuffer();
+      const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.editedFilename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Download error:', error);
+      alert('Download failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  }, [files]);
+
   const handleDownloadAll = useCallback(async () => {
     const readyFiles = files.filter(
       f => f.status === 'ready' || f.status === 'needs-review'
@@ -384,6 +407,16 @@ export default function Home() {
       alert('Download failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
   }, [files]);
+
+  const handleClearAll = useCallback(() => {
+    if (files.length === 0) {
+      return;
+    }
+    if (confirm(`Are you sure you want to remove all ${files.length} file(s)?`)) {
+      setFiles([]);
+      fileHashesRef.current.clear();
+    }
+  }, [files]);
   
   const readyCount = files.filter(
     f => f.status === 'ready' || f.status === 'needs-review'
@@ -401,7 +434,6 @@ export default function Home() {
         
         <Dropzone
           onFilesSelected={handleFilesSelected}
-          disabled={processing}
         />
         
         {processing && (
@@ -413,19 +445,28 @@ export default function Home() {
         <ResultsTable
           files={files}
           onFilenameChange={handleFilenameChange}
+          onDownload={handleDownloadFile}
           onOCRRequest={
             process.env.NEXT_PUBLIC_OCR_URL ? handleOCRRequest : undefined
           }
           onRemove={handleRemove}
         />
         
-        {readyCount > 0 && (
-          <div className="mt-8 text-center">
+        {files.length > 0 && (
+          <div className="mt-8 text-center flex justify-center gap-4">
+            {readyCount > 0 && (
+              <button
+                onClick={handleDownloadAll}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              >
+                Download ({readyCount} file{readyCount !== 1 ? 's' : ''})
+              </button>
+            )}
             <button
-              onClick={handleDownloadAll}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              onClick={handleClearAll}
+              className="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2"
             >
-              Download ({readyCount} file{readyCount !== 1 ? 's' : ''})
+              Clear All ({files.length} file{files.length !== 1 ? 's' : ''})
             </button>
           </div>
         )}

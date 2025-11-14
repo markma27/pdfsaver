@@ -53,7 +53,12 @@ Important:
 - Do NOT use investor/account holder names
 - "asx_code" is the ASX stock code if available in THIS document
 - For bank statements, "issuer" is the bank name
-- "date_iso" should be the statement date or payment date from THIS document (format: YYYY-MM-DD)
+- "date_iso" should be extracted from THIS document using these priorities:
+  * For DividendStatement: Use "Payment Date" first, then "Record Date", then "Statement Date"
+  * For DistributionStatement: Use "Payment Date" first, then "Record Date", then "Distribution Date"
+  * For other types: Use "Statement Date" or document date
+  * Format: YYYY-MM-DD (e.g., if you see "15/05/2024" or "15 May 2024", convert to "2024-05-15")
+  * IMPORTANT: Dates in DD/MM/YYYY format (Australian format) - day is first, month is second
 - "account_last4" should be the investor number or account last 4 digits from THIS document
 
 Document types:
@@ -148,16 +153,22 @@ CRITICAL INSTRUCTIONS:
    - The fund name is usually near the top of the document or in a title
    - Extract the COMPLETE fund/product name, not just the company name
    - For example, if you see "Company Name ABC Fund Class X", extract "Company Name ABC Fund Class X", not just "Company Name"
-3. **ALWAYS include the date** - Extract from document context (statement date, payment date, document date)
+3. **ALWAYS include the date** - Extract from document context using these priorities:
+   - For DividendStatement: Look for "Payment Date" first (e.g., "Payment Date: 15/05/2024" → "2024-05-15"), then "Record Date", then "Statement Date"
+   - For DistributionStatement: Look for "Payment Date" first, then "Record Date", then "Distribution Date"
+   - For other types: Look for "Statement Date" or document date
    - Format: YYYY-MM-DD
+   - CRITICAL: Australian dates are DD/MM/YYYY format - day comes first, month second (e.g., "15/05/2024" = May 15, 2024 = "2024-05-15")
    - If date is Unknown, use "YYYY-MM-DD" as placeholder
-4. **Format**: YYYY-MM-DD_[fund-product-slug]_document-type_account-last4.pdf
+4. **Format**: YYYY-MM-DD_[fund-product-slug]_document-type.pdf
+   - Do NOT include account numbers or identifiers in the filename
 5. **Convert fund name to slug**: lowercase, replace spaces with hyphens, remove special characters
    - Example: "ABC Fund Class X" → "abc-fund-class-x"
    - Remove parentheses and their contents if they are just qualifiers, but keep important class/type information
+   - Remove company suffixes: "Pty Ltd", "Pty. Ltd.", "PTY LTD", "Limited", "Ltd", "Ltd." (and all variations)
+   - Example: "ABC Fund Pty Ltd" → "abc-fund", "XYZ Company Pty. Ltd." → "xyz-company"
 6. **Document type** (lowercase, hyphenated):
    - "dividend-statement", "distribution-statement", "periodic-statement", "bank-statement", "buy-contract", "sell-contract", "holding-statement", "tax-statement"
-7. **Account**: Use last 4 digits from document, or "XXXX" if unknown
 
 IMPORTANT: 
 - Extract the SPECIFIC fund/product name from THIS document's context - each document is different
@@ -169,10 +180,10 @@ IMPORTANT:
 CRITICAL: Return ONLY the filename. Do NOT include any explanation, reasoning, or additional text. Just the filename.
 
 Example of correct response:
-2025-07-25_abc-fund-class-x_distribution-statement_1234.pdf
+2025-07-25_abc-fund-class-x_distribution-statement.pdf
 
 Example of INCORRECT response (do NOT do this):
-Based on the document context, I extracted the following information: * Fund/Product Name: ABC Fund Class X * Date: 2025-07-25 Using the formatting rules, the filename should be: 2025-07-25_abc-fund-class-x_distribution-statement_1234.pdf
+Based on the document context, I extracted the following information: * Fund/Product Name: ABC Fund Class X * Date: 2025-07-25 Using the formatting rules, the filename should be: 2025-07-25_abc-fund-class-x_distribution-statement.pdf
 
 Return ONLY the filename, nothing else."""
 
