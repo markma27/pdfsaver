@@ -38,15 +38,28 @@ app = FastAPI(title="PDFsaver OCR Worker", version="2.0.0")
 
 # Configuration
 ALLOW_ORIGIN = os.getenv("ALLOW_ORIGIN", "http://localhost:3000")
+ALLOW_ORIGINS = os.getenv("ALLOW_ORIGINS", "")  # Comma-separated list of allowed origins
 OCR_TOKEN = os.getenv("OCR_TOKEN", "change-me")
 
 # File cache for duplicate detection (in-memory)
 _file_cache: Dict[str, Dict[str, Any]] = {}
 
-# CORS middleware
+# CORS middleware configuration
+# If ALLOW_ORIGINS is set, use it; otherwise allow all origins (for development)
+if ALLOW_ORIGINS:
+    # Parse comma-separated origins
+    allowed_origins = [origin.strip() for origin in ALLOW_ORIGINS.split(",") if origin.strip()]
+    # Also add the single ALLOW_ORIGIN if set
+    if ALLOW_ORIGIN and ALLOW_ORIGIN not in allowed_origins:
+        allowed_origins.append(ALLOW_ORIGIN)
+else:
+    # Default: allow all origins (for development)
+    # In production, set ALLOW_ORIGINS environment variable
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -222,16 +235,16 @@ def build_fallback_filename(fields: Dict[str, Optional[str]]) -> str:
     # Convert doc_type to readable format with proper capitalization
     doc_type_map = {
         "DividendStatement": "Dividend Statement",
-        "DistributionStatement": "Dist Statement",
-        "CapitalCallStatement": "Cap Call",
-        "CallAndDistributionStatement": "Dist And Cap Call",
+        "DistributionStatement": "Distribution Statement",
+        "CapitalCallStatement": "Capital Call",
+        "CallAndDistributionStatement": "Distribution and Capital Call",
         "PeriodicStatement": "Periodic Statement",
         "BankStatement": "Bank Statement",
         "BuyContract": "Buy Contract",
         "SellContract": "Sell Contract",
         "HoldingStatement": "Holding Statement",
         "TaxStatement": "Tax Statement",
-        "NetAssetSummaryStatement": "Net Asset Summary Statement",
+        "NetAssetSummaryStatement": "Net Asset Summary",
         "FinancialStatement": "Financial Statement"
     }
     doc_type_tag = doc_type_map.get(doc_type, doc_type.replace("_", " ").title())
@@ -353,11 +366,10 @@ async def ocr_extract(
         if LLM_AVAILABLE and extract_and_suggest_filename_with_llm:
             # Check if LLM is actually available
             llm_available = check_llm_available()
-            print(f"LLM_AVAILABLE={LLM_AVAILABLE}, check_llm_available()={llm_available} for {file.filename}")
             if llm_available:
                 # Try combined LLM call first (faster - single HTTP request)
-                print(f"Attempting LLM extraction for {file.filename}")
-                combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=4000)
+                # Reduce text sample size for faster processing (2500 chars is usually enough)
+                combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=2500)
                 if combined_result:
                     fields.update({
                         "doc_type": combined_result.get("doc_type"),
@@ -365,26 +377,22 @@ async def ocr_extract(
                         "date_iso": combined_result.get("date_iso")
                     })
                     suggested_filename = combined_result.get("suggested_filename")
-                    print(f"LLM combined extraction successful for {file.filename}")
         
         # Fallback: Use separate LLM calls if combined call not available or failed
         if not suggested_filename and LLM_AVAILABLE:
             llm_available = check_llm_available()
             if llm_available and extract_with_llm:
-                print(f"Attempting separate LLM field extraction for {file.filename}")
-                llm_fields = extract_with_llm(text_content, max_chars=4000)
+                # Reduce text sample size for faster processing
+                llm_fields = extract_with_llm(text_content, max_chars=2500)
             else:
                 llm_fields = None
             if llm_fields:
                 fields.update(llm_fields)
-                print(f"LLM field extraction successful for {file.filename}")
             
             if llm_available and suggest_filename_with_llm:
-                print(f"Attempting LLM filename generation for {file.filename}")
-                llm_filename = suggest_filename_with_llm(fields, text_content[:4000])
+                llm_filename = suggest_filename_with_llm(fields, text_content[:2500])
                 if llm_filename:
                     suggested_filename = llm_filename
-                    print(f"LLM filename generation successful for {file.filename}")
         
         # Final fallback: Build simple filename if LLM not available or failed
         if not suggested_filename:

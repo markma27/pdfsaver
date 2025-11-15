@@ -59,6 +59,9 @@ def _call_llm_api(prompt: str, max_tokens: int = 200) -> Optional[str]:
     """
     if LLM_PROVIDER == "deepseek":
         # DeepSeek API call (OpenAI-compatible)
+        # DeepSeek doesn't use reasoning tokens, so we can use lower token limits
+        # Adjust max_tokens based on provider: DeepSeek needs less, GPT-5 Nano needs more
+        effective_max_tokens = max_tokens if max_tokens <= 1000 else 1000
         try:
             response = httpx.post(
                 DEEPSEEK_API_URL,
@@ -73,7 +76,7 @@ def _call_llm_api(prompt: str, max_tokens: int = 200) -> Optional[str]:
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.1,
-                    "max_tokens": max_tokens
+                    "max_tokens": effective_max_tokens
                 },
                 timeout=30.0
             )
@@ -118,17 +121,11 @@ def _call_llm_api(prompt: str, max_tokens: int = 200) -> Optional[str]:
             
             if response.status_code == 200:
                 result = response.json()
-                print(f"OpenAI API full response: {result}")
                 choices = result.get("choices", [])
-                print(f"OpenAI API choices count: {len(choices)}")
                 if choices:
                     message = choices[0].get("message", {})
-                    print(f"OpenAI API message: {message}")
                     content = message.get("content", "").strip()
-                    print(f"OpenAI API response received, content length: {len(content)}")
-                    if content:
-                        print(f"OpenAI API response preview: {content[:200]}")
-                    else:
+                    if not content:
                         print(f"OpenAI API response is empty! Full result: {result}")
                     return content
                 else:
@@ -168,7 +165,7 @@ def _call_llm_api(prompt: str, max_tokens: int = 200) -> Optional[str]:
             return None
 
 
-def extract_with_llm(text: str, max_chars: int = 2000) -> Optional[Dict[str, Any]]:
+def extract_with_llm(text: str, max_chars: int = 2500) -> Optional[Dict[str, Any]]:
     """
     Use LLM to extract document fields from text
     Returns dict with doc_type, issuer, date_iso, or None if LLM unavailable
@@ -437,8 +434,11 @@ Document text:
 
 JSON:"""
 
-    # GPT-5 Nano uses reasoning tokens, need more tokens for actual content
-    response_text = _call_llm_api(prompt, max_tokens=2000)
+    # Token limits: DeepSeek doesn't use reasoning tokens, GPT-5 Nano does
+    # For DeepSeek: 800 tokens is sufficient
+    # For GPT-5 Nano: 1500 tokens needed (400-500 reasoning + 800-1000 content)
+    max_tokens_value = 1500 if LLM_PROVIDER == "openai" else 800
+    response_text = _call_llm_api(prompt, max_tokens=max_tokens_value)
     if not response_text:
         return None
     
@@ -463,7 +463,7 @@ JSON:"""
         return None
 
 
-def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 4000) -> Optional[Dict[str, Any]]:
+def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 2500) -> Optional[Dict[str, Any]]:
     """
     Combined LLM call: Extract fields AND suggest filename in one request
     This reduces HTTP overhead and improves speed
@@ -735,16 +735,16 @@ Issuer rules:
 
 doc-type-tag mapping (use proper capitalization - first letter of each word):
 DividendStatement → Dividend Statement
-DistributionStatement → Dist Statement
-CapitalCallStatement → Cap Call
-CallAndDistributionStatement → Dist And Cap Call
+DistributionStatement → Distribution Statement
+CapitalCallStatement → Capital Call
+CallAndDistributionStatement → Distribution and Capital Call
 PeriodicStatement → Periodic Statement
 BankStatement → Bank Statement
 BuyContract → Buy Contract
 SellContract → Sell Contract
 HoldingStatement → Holding Statement
 TaxStatement → Tax Statement
-NetAssetSummaryStatement → Net Asset Summary Statement
+NetAssetSummaryStatement → Net Asset Summary
 FinancialStatement → Financial Statement
 
 ------------------------------------------
@@ -765,12 +765,13 @@ Document text:
 
 JSON:"""
 
-    # GPT-5 Nano uses reasoning tokens, need more tokens for actual content
-    response_text = _call_llm_api(prompt, max_tokens=1000)
+    # Token limits: DeepSeek doesn't use reasoning tokens, GPT-5 Nano does
+    # For DeepSeek: 800 tokens is sufficient
+    # For GPT-5 Nano: 1500 tokens needed (400-500 reasoning + 800-1000 content)
+    max_tokens_value = 1500 if LLM_PROVIDER == "openai" else 800
+    response_text = _call_llm_api(prompt, max_tokens=max_tokens_value)
     if not response_text:
-        print("extract_and_suggest_filename_with_llm: No response from LLM API")
         return None
-    print(f"extract_and_suggest_filename_with_llm: Received response, length={len(response_text)}")
     
     # Extract JSON from response (handle markdown code blocks)
     if "```json" in response_text:
@@ -781,7 +782,6 @@ JSON:"""
     # Try to parse JSON
     try:
         extracted = json.loads(response_text)
-        print(f"extract_and_suggest_filename_with_llm: Successfully parsed JSON")
         # Validate and clean extracted data
         result = {
             "doc_type": extracted.get("doc_type") if extracted.get("doc_type") != "null" else None,
@@ -789,7 +789,6 @@ JSON:"""
             "date_iso": extracted.get("date_iso") if extracted.get("date_iso") != "null" else None,
             "suggested_filename": extracted.get("suggested_filename") if extracted.get("suggested_filename") != "null" else None
         }
-        print(f"extract_and_suggest_filename_with_llm: Extracted result: {result}")
         return result
     except json.JSONDecodeError as e:
         print(f"LLM JSON parsing failed: {e}")
@@ -841,16 +840,16 @@ Where:
 
 doc-type-tag mapping (use proper capitalization - first letter of each word):
 DividendStatement → Dividend Statement
-DistributionStatement → Dist Statement
-CapitalCallStatement → Cap Call
-CallAndDistributionStatement → Dist And Cap Call
+DistributionStatement → Distribution Statement
+CapitalCallStatement → Capital Call
+CallAndDistributionStatement → Distribution and Capital Call
 PeriodicStatement → Periodic Statement
 BankStatement → Bank Statement
 BuyContract → Buy Contract
 SellContract → Sell Contract
 HoldingStatement → Holding Statement
 TaxStatement → Tax Statement
-NetAssetSummaryStatement → Net Asset Summary Statement
+NetAssetSummaryStatement → Net Asset Summary
 FinancialStatement → Financial Statement
 
 ------------------------------------------
@@ -1011,8 +1010,11 @@ Do NOT include:
 
 Filename:"""
 
-    # GPT-5 Nano uses reasoning tokens, need more tokens for actual content
-    response_text = _call_llm_api(prompt, max_tokens=1000)
+    # Token limits: DeepSeek doesn't use reasoning tokens, GPT-5 Nano does
+    # For DeepSeek: 800 tokens is sufficient
+    # For GPT-5 Nano: 1500 tokens needed (400-500 reasoning + 800-1000 content)
+    max_tokens_value = 1500 if LLM_PROVIDER == "openai" else 800
+    response_text = _call_llm_api(prompt, max_tokens=max_tokens_value)
     if not response_text:
         return None
     
