@@ -62,9 +62,21 @@ def _call_llm_api(prompt: str, max_tokens: int = 200) -> Optional[str]:
         # DeepSeek doesn't use reasoning tokens, so we can use lower token limits
         # Adjust max_tokens based on provider: DeepSeek needs less, GPT-5 Nano needs more
         effective_max_tokens = max_tokens if max_tokens <= 1000 else 1000
+        
+        # Ensure URL has protocol prefix
+        api_url = DEEPSEEK_API_URL
+        if not api_url:
+            api_url = "https://api.deepseek.com/v1/chat/completions"
+        elif not api_url.startswith(("http://", "https://")):
+            # If URL doesn't have protocol, add https://
+            api_url = f"https://{api_url}"
+        
+        print(f"DeepSeek API URL: {api_url}")
+        print(f"DeepSeek API Key set: {bool(DEEPSEEK_API_KEY and DEEPSEEK_API_KEY.strip())}")
+        
         try:
             response = httpx.post(
-                DEEPSEEK_API_URL,
+                api_url,
                 headers={
                     "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                     "Content-Type": "application/json",
@@ -461,7 +473,7 @@ JSON:"""
         # If JSON parsing fails, try to extract fields manually
         print(f"LLM JSON parsing failed: {response_text[:200]}")
         return None
-
+    
 
 def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 2500) -> Optional[Dict[str, Any]]:
     """
