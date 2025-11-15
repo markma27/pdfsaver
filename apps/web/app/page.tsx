@@ -345,91 +345,14 @@ export default function Home() {
     [processFilesWithConcurrency]
   );
   
-  const handleFilenameChange = useCallback(async (id: string, newFilename: string) => {
+  const handleFilenameChange = useCallback((id: string, newFilename: string) => {
     // Update local state
     setFiles(prev =>
       prev.map(f =>
         f.id === id ? { ...f, editedFilename: newFilename } : f
       )
     );
-
-    // Send learning feedback to OCR Worker
-    const file = files.find(f => f.id === id);
-    if (!file || !process.env.NEXT_PUBLIC_OCR_URL) {
-      return;
-    }
-
-    // Only send learning feedback if filename was actually changed
-    if (file.suggestedFilename === newFilename) {
-      return;
-    }
-
-    try {
-      // Extract text sample from PDF (first 500 chars for learning)
-      let textSample = '';
-      try {
-        const extractResult = await extractText(file.originalFile, 1);
-        textSample = extractResult.text.substring(0, 500);
-      } catch (e) {
-        console.warn('Failed to extract text for learning:', e);
-        // Continue without text sample
-      }
-
-      // Call learning API - build URL from OCR URL
-      const ocrUrl = process.env.NEXT_PUBLIC_OCR_URL;
-      if (!ocrUrl) {
-        console.warn('OCR URL not configured, skipping learning feedback');
-        return;
-      }
-      
-      // Build learn URL by replacing the endpoint
-      let learnUrl: string;
-      if (ocrUrl.includes('/v1/ocr-extract')) {
-        learnUrl = ocrUrl.replace('/v1/ocr-extract', '/v1/learn-edit');
-      } else {
-        // Fallback: try to construct from base URL
-        const baseUrl = ocrUrl.replace(/\/v1\/.*$/, '');
-        learnUrl = `${baseUrl}/v1/learn-edit`;
-      }
-      
-      console.log('Sending learning feedback to:', learnUrl);
-      
-      try {
-        const response = await fetch(learnUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.NEXT_PUBLIC_OCR_TOKEN || ''}`
-          },
-          body: JSON.stringify({
-            original_filename: file.suggestedFilename,
-            edited_filename: newFilename,
-            fields: {
-              doc_type: file.fields.doc_type || null,
-              issuer: file.fields.issuer || null,
-              date_iso: file.fields.date_iso || null,
-              asx_code: file.fields.asx_code || null,
-              account_last4: file.fields.account_last4 || null
-            },
-            text_sample: textSample
-          })
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          console.log('Learning feedback sent successfully:', result);
-        } else {
-          const errorText = await response.text();
-          console.warn(`Failed to send learning feedback (${response.status}):`, errorText || response.statusText);
-        }
-      } catch (fetchError) {
-        console.error('Network error sending learning feedback:', fetchError);
-      }
-    } catch (error) {
-      console.error('Error sending learning feedback:', error);
-      // Don't show error to user - learning is optional
-    }
-  }, [files]);
+  }, []);
   
   
   const handleDownloadFile = useCallback(async (id: string) => {
@@ -533,49 +456,53 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-slate-50">
       <div className="max-w-full mx-auto p-4 sm:p-6 lg:p-8">
-        {/* Header with Logos */}
-        <div className="mb-8 relative">
-          {/* Logos - Top Right */}
-          <div className="absolute top-0 right-0 z-10 flex items-center gap-4">
-            <img
-              src="/jm-logo.svg"
-              alt="JM Logo"
-              className="h-16 sm:h-20 md:h-24 lg:h-28 w-auto"
-            />
-            <img
-              src="/pg-logo.svg"
-              alt="PG Logo"
-              className="h-16 sm:h-20 md:h-24 lg:h-28 w-auto"
-            />
-          </div>
-          
-          <div className="pr-56 sm:pr-72 md:pr-80 lg:pr-96">
-            <h1 className="text-4xl sm:text-5xl font-bold text-slate-900 mb-3 tracking-tight">PDFsaver</h1>
-            <p className="text-base sm:text-lg text-slate-600 font-medium">
-              Bulk upload PDF files, automatically extract key information and rename
-            </p>
-          </div>
-        </div>
-
-        {/* Action Buttons - Top Left */}
-        {files.length > 0 && (
-          <div className="mb-6 flex gap-3">
-            {readyCount > 0 && (
+        {/* Header with Logo, Title, and Buttons */}
+        <div className="mb-8">
+          <div className="flex flex-col sm:flex-row items-start sm:items-end justify-between gap-4">
+            {/* Left: Logo */}
+            <div className="flex items-end flex-shrink-0">
+              <img
+                src="/pg-logo.svg"
+                alt="PG Logo"
+                className="h-16 sm:h-20 md:h-24 lg:h-28 w-auto"
+              />
+            </div>
+            
+            {/* Middle: Title and Subtitle - Centered */}
+            <div className="flex-1 min-w-0 flex flex-col items-center justify-end">
+              <h1 className="text-4xl sm:text-5xl font-bold text-slate-900 mb-3 tracking-tight text-center">PDFsaver</h1>
+              <p className="text-base sm:text-lg text-slate-600 font-medium text-center">
+                Bulk upload PDF files, automatically extract key information and rename
+              </p>
+            </div>
+            
+            {/* Right: Action Buttons - Always visible, bottom aligned with logo */}
+            <div className="flex items-center gap-3 flex-shrink-0">
               <button
                 onClick={handleDownloadAll}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-5 rounded-lg shadow-sm hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 active:scale-95"
+                disabled={readyCount === 0}
+                className={`font-semibold py-2.5 px-5 rounded-lg shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 active:scale-95 text-sm sm:text-base ${
+                  readyCount > 0
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white hover:shadow-md focus:ring-blue-500 cursor-pointer'
+                    : 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60'
+                }`}
               >
                 Download ({readyCount} file{readyCount !== 1 ? 's' : ''})
               </button>
-            )}
-            <button
-              onClick={handleClearAll}
-              className="bg-slate-500 hover:bg-slate-600 text-white font-semibold py-2.5 px-5 rounded-lg shadow-sm hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 active:scale-95"
-            >
-              Clear All ({files.length} file{files.length !== 1 ? 's' : ''})
-            </button>
+              <button
+                onClick={handleClearAll}
+                disabled={files.length === 0}
+                className={`font-semibold py-2.5 px-5 rounded-lg shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 active:scale-95 text-sm sm:text-base ${
+                  files.length > 0
+                    ? 'bg-slate-500 hover:bg-slate-600 text-white hover:shadow-md focus:ring-slate-500 cursor-pointer'
+                    : 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60'
+                }`}
+              >
+                Clear All ({files.length} file{files.length !== 1 ? 's' : ''})
+              </button>
+            </div>
           </div>
-        )}
+        </div>
 
         {/* Main Layout - Left/Right Split */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[calc(100vh-250px)]">

@@ -32,14 +32,6 @@ except ImportError:
     extract_and_suggest_filename_with_llm = None
     check_ollama_available = lambda: False
 
-# Learning store
-try:
-    from learning_store import get_learning_store
-    LEARNING_AVAILABLE = True
-except ImportError:
-    LEARNING_AVAILABLE = False
-    get_learning_store = None
-
 app = FastAPI(title="PDFsaver OCR Worker", version="2.0.0")
 
 # Configuration
@@ -71,13 +63,6 @@ class OCRResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-
-
-class EditFeedbackRequest(BaseModel):
-    original_filename: str
-    edited_filename: str
-    fields: Dict[str, Optional[str]]
-    text_sample: Optional[str] = ""
 
 
 def check_pdf_has_text(pdf_path: str, max_pages: int = 2) -> Tuple[bool, str]:
@@ -142,17 +127,34 @@ def extract_text_from_pdf(pdf_path: str, max_pages: int = 2) -> str:
 def build_fallback_filename(fields: Dict[str, Optional[str]]) -> str:
     """
     Build a simple fallback filename if LLM is not available
-    Format: YYYY-MM-DD_Unknown_Unknown.pdf
+    Format: YYYYMMDD [issuer] [doc-type].pdf
     """
-    date = fields.get("date_iso") or "YYYY-MM-DD"
+    date_iso = fields.get("date_iso") or "YYYY-MM-DD"
+    # Convert YYYY-MM-DD to YYYYMMDD
+    date = date_iso.replace("-", "") if "-" in date_iso else date_iso
+    
     issuer = fields.get("issuer") or "Unknown"
+    # Remove common suffixes
+    issuer = issuer.replace(" Pty Ltd", "").replace(" Pty. Ltd.", "").replace(" Limited", "").replace(" Ltd", "").strip()
+    
     doc_type = fields.get("doc_type") or "Unknown"
+    # Convert doc_type to readable format with proper capitalization
+    doc_type_map = {
+        "DividendStatement": "Dividend Statement",
+        "DistributionStatement": "Dist Statement",
+        "CapitalCallStatement": "Cap Call",
+        "CallAndDistributionStatement": "Dist And Cap Call",
+        "PeriodicStatement": "Periodic Statement",
+        "BankStatement": "Bank Statement",
+        "BuyContract": "Buy Contract",
+        "SellContract": "Sell Contract",
+        "HoldingStatement": "Holding Statement",
+        "TaxStatement": "Tax Statement",
+        "NetAssetSummaryStatement": "Net Asset Summary Statement"
+    }
+    doc_type_tag = doc_type_map.get(doc_type, doc_type.replace("_", " ").title())
     
-    # Simple slugify
-    issuer_slug = issuer.lower().replace(" ", "-").replace("_", "-")
-    doc_type_slug = doc_type.lower().replace(" ", "-").replace("_", "-")
-    
-    return f"{date}_{issuer_slug}_{doc_type_slug}.pdf"
+    return f"{date} - {issuer} - {doc_type_tag}.pdf"
 
 
 @app.get("/healthz")
@@ -234,11 +236,11 @@ async def ocr_extract(
             print(f"Cache hit for {file.filename}")
             return OCRResponse(
                 has_text=has_text,
-                ocred=ocred,
+                    ocred=ocred,
                 pages_used=2,
-                fields=cached_result["fields"],
-                suggested_filename=cached_result["suggested_filename"]
-            )
+                    fields=cached_result["fields"],
+                    suggested_filename=cached_result["suggested_filename"]
+                )
         
         # Initialize fields
         fields = {
@@ -250,18 +252,10 @@ async def ocr_extract(
         }
         suggested_filename = None
         
-        # Get learning examples if available
-        learning_examples = []
-        if LEARNING_AVAILABLE and get_learning_store:
-            learning_store = get_learning_store()
-            learning_examples = learning_store.find_similar_edits(fields, text_content, max_examples=3)
-            if learning_examples:
-                print(f"Found {len(learning_examples)} similar edit examples for learning")
-        
         # Use LLM for extraction and filename generation
         if LLM_AVAILABLE and extract_and_suggest_filename_with_llm:
             # Try combined LLM call first (faster - single HTTP request)
-            combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=4000, learning_examples=learning_examples)
+            combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=4000)
             if combined_result:
                 fields.update({
                     "doc_type": combined_result.get("doc_type"),
@@ -277,12 +271,12 @@ async def ocr_extract(
         if not suggested_filename and LLM_AVAILABLE:
             if extract_with_llm:
                 llm_fields = extract_with_llm(text_content, max_chars=4000)
-                if llm_fields:
-                    fields.update(llm_fields)
-                    print(f"LLM field extraction successful for {file.filename}")
+            if llm_fields:
+                fields.update(llm_fields)
+                print(f"LLM field extraction successful for {file.filename}")
             
             if suggest_filename_with_llm:
-                llm_filename = suggest_filename_with_llm(fields, text_content[:4000], learning_examples=learning_examples)
+                llm_filename = suggest_filename_with_llm(fields, text_content[:4000])
                 if llm_filename:
                     suggested_filename = llm_filename
                     print(f"LLM filename generation successful for {file.filename}")
@@ -330,45 +324,6 @@ async def ocr_extract(
         # Cleanup
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-
-
-@app.post("/v1/learn-edit")
-async def learn_edit(
-    request: EditFeedbackRequest,
-    authorization: Optional[str] = Header(None)
-):
-    """
-    Learn from user filename edits
-    Stores the edit pattern for future similar documents
-    """
-    # Verify token
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    
-    try:
-        scheme, token = authorization.split()
-        if scheme.lower() != "bearer":
-            raise HTTPException(status_code=401, detail="Invalid authorization scheme")
-        if token != OCR_TOKEN:
-            raise HTTPException(status_code=403, detail="Invalid token")
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
-    
-    if not LEARNING_AVAILABLE or not get_learning_store:
-        raise HTTPException(status_code=503, detail="Learning store not available")
-    
-    try:
-        learning_store = get_learning_store()
-        learning_store.add_edit(
-            original_filename=request.original_filename,
-            edited_filename=request.edited_filename,
-            fields=request.fields,
-            text_sample=request.text_sample or ""
-        )
-        return {"status": "success", "message": "Edit pattern learned"}
-    except Exception as e:
-        print(f"Learning store error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to learn edit: {str(e)}")
 
 
 if __name__ == "__main__":

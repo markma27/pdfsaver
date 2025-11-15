@@ -146,7 +146,33 @@ For HoldingStatement/Share Summary/NetAssetSummaryStatement:
 - DO NOT use service provider names like "Morgan Stanley Fund Services", "Computershare", "Link Market Services" - these are NOT the fund name
 - The fund name is usually the FIRST prominent name in the document title, before words like "Share Summary", "Statement", "NAV", etc.
 
-For other document types (DividendStatement, DistributionStatement, etc.):
+For DistributionStatement/Distribution Advice:
+- CRITICAL: Extract the ACTUAL FUND NAME, NOT the issuer/trustee/registry name
+- Look for fund name in THIS PRIORITY ORDER:
+  1. "Fund:" field - HIGHEST PRIORITY (e.g., "Fund: Ares Diversified Credit Fund - Class I" → "Ares Diversified Credit Fund - Class I")
+  2. Document title/header - Look for patterns like:
+     * "FUND NAME Distribution Statement"
+     * "FUND NAME Distribution Advice"
+     * "FUND NAME | ABN: ..." (fund name before ABN)
+  3. After "Distribution Statement" or "Distribution Advice" title, look for fund name in the same section
+  4. Look for fund name near "APIR Code" or fund identifiers
+- Examples of CORRECT extraction:
+  * "Ares Diversified Credit Fund - Class I" → "Ares Diversified Credit Fund - Class I"
+  * "Causeway Wholesale Private Debt Income Fund" → "Causeway Wholesale Private Debt Income Fund"
+  * "Fidante" or "AMAL CAUSEWAY TRUSTEES" → These are WRONG (these are issuers/trustees, not fund names)
+- DO NOT use:
+  * Issuer/Trustee names: "Fidante", "AMAL CAUSEWAY TRUSTEES", "Automic", "Computershare", "Link Market Services"
+  * Registry service names: "OIF Registry Services", "Automic Registry Services"
+  * Investor/recipient names
+  * Document labels: "Distribution Statement", "Distribution Advice"
+
+For DividendStatement:
+- Extract the fund/product/company name from document title or main content
+- Look for fund names in document headers or titles
+- Look for company name near "Dividend Statement" title
+- DO NOT use service provider or registry names - use the actual fund/company name
+
+For other document types:
 - Extract the fund/product/company name from document title or main content
 - Look for fund names in document headers or titles
 - DO NOT use service provider or registry names - use the actual fund/company name
@@ -248,7 +274,7 @@ JSON:"""
     return None
 
 
-def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 4000, learning_examples: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 4000) -> Optional[Dict[str, Any]]:
     """
     Combined LLM call: Extract fields AND suggest filename in one request
     This reduces HTTP overhead and improves speed
@@ -290,7 +316,7 @@ Return ONLY this JSON object:
   "asx_code": "ASX code or null",
   "date_iso": "YYYY-MM-DD or null",
   "account_last4": "last 4 digits or null",
-  "suggested_filename": "YYYY-MM-DD_[issuer-slug]_[doc-type-tag].pdf or null"
+  "suggested_filename": "YYYYMMDD [issuer] [doc-type-tag].pdf or null"
 }}
 
 ------------------------------------------
@@ -371,7 +397,33 @@ For HoldingStatement/Share Summary/NetAssetSummaryStatement:
 - DO NOT use service provider names like "Morgan Stanley Fund Services", "Computershare", "Link Market Services" - these are NOT the fund name
 - The fund name is usually the FIRST prominent name in the document title, before words like "Share Summary", "Statement", "NAV", etc.
 
-For other document types (DividendStatement, DistributionStatement, etc.):
+For DistributionStatement/Distribution Advice:
+- CRITICAL: Extract the ACTUAL FUND NAME, NOT the issuer/trustee/registry name
+- Look for fund name in THIS PRIORITY ORDER:
+  1. "Fund:" field - HIGHEST PRIORITY (e.g., "Fund: Ares Diversified Credit Fund - Class I" → "Ares Diversified Credit Fund - Class I")
+  2. Document title/header - Look for patterns like:
+     * "FUND NAME Distribution Statement"
+     * "FUND NAME Distribution Advice"
+     * "FUND NAME | ABN: ..." (fund name before ABN)
+  3. After "Distribution Statement" or "Distribution Advice" title, look for fund name in the same section
+  4. Look for fund name near "APIR Code" or fund identifiers
+- Examples of CORRECT extraction:
+  * "Ares Diversified Credit Fund - Class I" → "Ares Diversified Credit Fund - Class I"
+  * "Causeway Wholesale Private Debt Income Fund" → "Causeway Wholesale Private Debt Income Fund"
+  * "Fidante" or "AMAL CAUSEWAY TRUSTEES" → These are WRONG (these are issuers/trustees, not fund names)
+- DO NOT use:
+  * Issuer/Trustee names: "Fidante", "AMAL CAUSEWAY TRUSTEES", "Automic", "Computershare", "Link Market Services"
+  * Registry service names: "OIF Registry Services", "Automic Registry Services"
+  * Investor/recipient names
+  * Document labels: "Distribution Statement", "Distribution Advice"
+
+For DividendStatement:
+- Extract the fund/product/company name from document title or main content
+- Look for fund names in document headers or titles
+- Look for company name near "Dividend Statement" title
+- DO NOT use service provider or registry names - use the actual fund/company name
+
+For other document types:
 - Extract the fund/product/company name from document title or main content
 - Look for fund names in document headers or titles
 - DO NOT use service provider or registry names - use the actual fund/company name
@@ -410,38 +462,33 @@ Extract last 4 digits of account or investor number if present.
 Return null if not present.
 
 ------------------------------------------
-USER LEARNING EXAMPLES (FOLLOW THESE PATTERNS)
-------------------------------------------
-{f"Below are examples of how similar documents were named by the user. Follow these patterns when generating the filename:" if learning_examples else ""}
-{chr(10).join([f"Example {i+1}: Document type '{ex.get('fields', {}).get('doc_type', 'unknown')}', Issuer '{ex.get('fields', {}).get('issuer', 'unknown')}' → User edited filename: {ex.get('edited_filename', '')}" for i, ex in enumerate(learning_examples[:3])]) if learning_examples else ""}
-{f"IMPORTANT: When you see similar documents, use the same naming pattern as shown in the examples above." if learning_examples else ""}
-
-------------------------------------------
 FILENAME RULES
 ------------------------------------------
-Filename format: YYYY-MM-DD_{{issuer-slug}}_{{doc-type-tag}}.pdf
+Filename format: YYYYMMDD - [issuer] - [doc-type-tag].pdf
 
-Issuer slug rules:
-- lowercase
-- spaces → hyphens
-- remove punctuation
-- remove suffixes (Pty Ltd, Pty. Ltd., Limited, Ltd)
+Date format: YYYYMMDD (no hyphens, no separators)
+- Convert YYYY-MM-DD to YYYYMMDD (e.g., "2025-11-13" → "20251113")
+
+Issuer rules:
+- Keep original capitalization and spaces
+- Remove suffixes (Pty Ltd, Pty. Ltd., Limited, Ltd) if present
 - for Buy/Sell: use the SECURITY name
 - do NOT include account numbers or investor names
 - do NOT use broker names
+- Use dashes with spaces ( - ) to separate date, issuer, and doc-type-tag
 
-doc-type-tag mapping:
-DividendStatement → dividend-statement
-DistributionStatement → dist-statement
-CapitalCallStatement → cap-call
-CallAndDistributionStatement → dist-and-cap-call
-PeriodicStatement → periodic-statement
-BankStatement → bank-statement
-BuyContract → buy-contract
-SellContract → sell-contract
-HoldingStatement → holding-statement
-TaxStatement → tax-statement
-NetAssetSummaryStatement → net-asset-summary-statement
+doc-type-tag mapping (use proper capitalization - first letter of each word):
+DividendStatement → Dividend Statement
+DistributionStatement → Dist Statement
+CapitalCallStatement → Cap Call
+CallAndDistributionStatement → Dist And Cap Call
+PeriodicStatement → Periodic Statement
+BankStatement → Bank Statement
+BuyContract → Buy Contract
+SellContract → Sell Contract
+HoldingStatement → Holding Statement
+TaxStatement → Tax Statement
+NetAssetSummaryStatement → Net Asset Summary Statement
 
 ------------------------------------------
 RETURN FORMAT
@@ -508,7 +555,7 @@ JSON:"""
     return None
 
 
-def suggest_filename_with_llm(fields: Dict[str, Optional[str]], text_sample: str = "", learning_examples: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+def suggest_filename_with_llm(fields: Dict[str, Optional[str]], text_sample: str = "") -> Optional[str]:
     """
     Use LLM to suggest a better filename based on document context
     LLM extracts everything directly from document text - ignores potentially incorrect fields
@@ -538,26 +585,29 @@ OUTPUT FORMAT (FILENAME MODE)
 ------------------------------------------
 Return ONLY the filename in this format:
 
-YYYY-MM-DD_{{issuer-slug}}_{{doc-type-tag}}.pdf
+YYYYMMDD - [issuer] - [doc-type-tag].pdf
+
+Date format: YYYYMMDD (no hyphens, no separators)
+- Convert YYYY-MM-DD to YYYYMMDD (e.g., "2025-11-13" → "20251113")
 
 Where:
-- issuer-slug = lowercase, hyphens instead of spaces, remove special chars
-- remove "Pty Ltd", "Ltd", "Limited", "Pty. Ltd.", etc.
+- issuer = keep original capitalization and spaces, remove "Pty Ltd", "Ltd", "Limited", "Pty. Ltd.", etc.
+- Use dashes with spaces ( - ) to separate date, issuer, and doc-type-tag
 - do NOT include investor/broker names
 - for BuyContract/SellContract: use INVESTMENT/SECURITY name (not broker)
 
-doc-type-tag mapping:
-DividendStatement → dividend-statement
-DistributionStatement → dist-statement
-CapitalCallStatement → cap-call
-CallAndDistributionStatement → dist-and-cap-call
-PeriodicStatement → periodic-statement
-BankStatement → bank-statement
-BuyContract → buy-contract
-SellContract → sell-contract
-HoldingStatement → holding-statement
-TaxStatement → tax-statement
-NetAssetSummaryStatement → net-asset-summary-statement
+doc-type-tag mapping (use proper capitalization - first letter of each word):
+DividendStatement → Dividend Statement
+DistributionStatement → Dist Statement
+CapitalCallStatement → Cap Call
+CallAndDistributionStatement → Dist And Cap Call
+PeriodicStatement → Periodic Statement
+BankStatement → Bank Statement
+BuyContract → Buy Contract
+SellContract → Sell Contract
+HoldingStatement → Holding Statement
+TaxStatement → Tax Statement
+NetAssetSummaryStatement → Net Asset Summary Statement
 
 ------------------------------------------
 INVESTMENT NAME EXTRACTION (BuyContract/SellContract)
@@ -565,20 +615,20 @@ INVESTMENT NAME EXTRACTION (BuyContract/SellContract)
 CRITICAL: Extract the INVESTMENT/SECURITY name being bought/sold from the document text.
 
 Look for fields in THIS PRIORITY ORDER:
-1. "COMPANY:" - HIGHEST PRIORITY (e.g., "COMPANY: CLEO DIAGNOSTICS LTD" → "cleo-diagnostics-ltd")
-2. "Stock Description:" - HIGH PRIORITY (e.g., "Stock Description: RUSSELL 2000 INDEX ISHARES" → "russell-2000-index-ishares")
+1. "COMPANY:" - HIGHEST PRIORITY (e.g., "COMPANY: CLEO DIAGNOSTICS LTD" → "CLEO DIAGNOSTICS")
+2. "Stock Description:" - HIGH PRIORITY (e.g., "Stock Description: RUSSELL 2000 INDEX ISHARES" → "RUSSELL 2000 INDEX ISHARES")
 3. "Security Description:" - PRIMARY field - Look in tables after "WE HAVE BOUGHT/SOLD THE FOLLOWING SECURITIES FOR YOU"
-   * Example: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "perpetual-diversified-income-active-etf"
-   * Example: "Security Description: VANECK AUSTRALIAN SUBORDINATED DEBT ETF" → "van-eck-australian-subordinated-debt-etf"
+   * Example: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
+   * Example: "Security Description: VANECK AUSTRALIAN SUBORDINATED DEBT ETF" → "VANECK AUSTRALIAN SUBORDINATED DEBT ETF"
    * Extract the FULL name including "ETF", "FUND", "INDEX", "ISHARES"
 4. "Investment:", "Code:", or main investment name in transaction details
 
 Examples of CORRECT extraction:
-- "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "perpetual-diversified-income-active-etf"
-- "VANECK AUSTRALIAN SUBORDINATED DEBT ETF" → "van-eck-australian-subordinated-debt-etf"
-- "CLEO DIAGNOSTICS LTD" → "cleo-diagnostics-ltd"
-- "RUSSELL 2000 INDEX ISHARES" → "russell-2000-index-ishares"
-- "BRAMBLES LIMITED" → "brambles-limited"
+- "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
+- "VANECK AUSTRALIAN SUBORDINATED DEBT ETF" → "VANECK AUSTRALIAN SUBORDINATED DEBT ETF"
+- "CLEO DIAGNOSTICS LTD" → "CLEO DIAGNOSTICS" (remove Ltd)
+- "RUSSELL 2000 INDEX ISHARES" → "RUSSELL 2000 INDEX ISHARES"
+- "BRAMBLES LIMITED" → "BRAMBLES" (remove Limited)
 
 CRITICAL - DO NOT use (these are WRONG):
 - Broker names: "Equity & Super", "EquitySuper", "CommSec", "JBWere", "Ord Minnett", "Morgan Stanley"
@@ -597,7 +647,27 @@ You MUST extract ONLY the investment name from "Security Description" field inst
 ------------------------------------------
 FUND NAME EXTRACTION (Other Document Types)
 ------------------------------------------
-For CapitalCallStatement/CallAndDistributionStatement/DistributionStatement:
+For DistributionStatement/Distribution Advice:
+- CRITICAL: Extract the ACTUAL FUND NAME, NOT the issuer/trustee/registry name
+- Look for fund name in THIS PRIORITY ORDER:
+  1. "Fund:" field - HIGHEST PRIORITY (e.g., "Fund: Ares Diversified Credit Fund - Class I" → "Ares Diversified Credit Fund Class I")
+  2. Document title/header - Look for patterns like:
+     * "FUND NAME Distribution Statement" → extract FUND NAME
+     * "FUND NAME Distribution Advice" → extract FUND NAME
+     * "FUND NAME | ABN: ..." → extract FUND NAME (before ABN)
+  3. After "Distribution Statement" or "Distribution Advice" title, look for fund name in the same section
+  4. Look for fund name near "APIR Code" or fund identifiers
+- Examples of CORRECT extraction:
+  * "Ares Diversified Credit Fund - Class I" → "Ares Diversified Credit Fund Class I" (replace hyphens with spaces)
+  * "Causeway Wholesale Private Debt Income Fund" → "Causeway Wholesale Private Debt Income Fund"
+  * "Fidante" or "AMAL CAUSEWAY TRUSTEES" → These are WRONG (these are issuers/trustees, not fund names)
+- DO NOT use:
+  * Issuer/Trustee names: "Fidante", "AMAL CAUSEWAY TRUSTEES", "Automic", "Computershare", "Link Market Services"
+  * Registry service names: "OIF Registry Services", "Automic Registry Services"
+  * Investor/recipient names
+  * Document labels: "Distribution Statement", "Distribution Advice"
+
+For CapitalCallStatement/CallAndDistributionStatement:
 - Extract the FUND/PRODUCT name from document title FIRST
 - Look for patterns like "FUND NAME - CAPITAL CALL NOTICE" or "FUND NAME - DISTRIBUTION STATEMENT"
 - Extract the FULL fund name including "Fund", "Ventures", "Partnership", etc.
@@ -607,9 +677,9 @@ For HoldingStatement/Share Summary/NetAssetSummaryStatement:
 - Extract the FUND name from the document TITLE (usually at the top of the document)
 - Look for patterns like: "FUND NAME Share Summary", "FUND NAME, Ltd. Share Summary", "FUND NAME NAV Statement"
 - Examples:
-  * "Highwest Global Offshore Fund, Ltd. Share Summary" → "highwest-global-offshore-fund-ltd"
-  * "ABC Investment Fund Share Summary" → "abc-investment-fund"
-  * "XYZ Fund NAV Statement" → "xyz-fund"
+  * "Highwest Global Offshore Fund, Ltd. Share Summary" → "Highwest Global Offshore Fund" (remove Ltd)
+  * "ABC Investment Fund Share Summary" → "ABC Investment Fund"
+  * "XYZ Fund NAV Statement" → "XYZ Fund"
 - CRITICAL: Extract the ACTUAL FUND NAME, NOT the service provider name
 - DO NOT use service provider names like "Morgan Stanley Fund Services", "Computershare", "Link Market Services" - these are NOT the fund name
 - The fund name is usually the FIRST prominent name in the document title, before words like "Share Summary", "Statement", "NAV", etc.
@@ -635,14 +705,8 @@ DistributionStatement:
 All others:
   Statement Date or document date
 
-Format: YYYY-MM-DD (Australian dates are DD/MM/YYYY - day first, month second)
-
-------------------------------------------
-USER LEARNING EXAMPLES (FOLLOW THESE PATTERNS)
-------------------------------------------
-{f"Below are examples of how similar documents were named by the user. Follow these patterns when generating the filename:" if learning_examples else ""}
-{chr(10).join([f"Example {i+1}: Document type '{ex.get('fields', {}).get('doc_type', 'unknown')}', Issuer '{ex.get('fields', {}).get('issuer', 'unknown')}' → User edited filename: {ex.get('edited_filename', '')}" for i, ex in enumerate(learning_examples[:3])]) if learning_examples else ""}
-{f"IMPORTANT: When you see similar documents, use the same naming pattern as shown in the examples above." if learning_examples else ""}
+Format for date_iso field: YYYY-MM-DD (Australian dates are DD/MM/YYYY - day first, month second)
+Format for filename: YYYYMMDD (convert YYYY-MM-DD to YYYYMMDD, e.g., "2025-11-13" → "20251113")
 
 ------------------------------------------
 RETURN FORMAT
