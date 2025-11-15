@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any, Tuple
 
 import fitz  # PyMuPDF  # type: ignore
 import ocrmypdf  # type: ignore
-from fastapi import FastAPI, File, UploadFile, HTTPException, Header  # type: ignore
+from fastapi import FastAPI, File, UploadFile, HTTPException, Header, Response, Request  # type: ignore
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore
 from pydantic import BaseModel  # type: ignore
 
@@ -280,6 +280,35 @@ async def health_check():
                 status["llm_provider"] = "ollama"
                 status["llm_model"] = os.getenv("OLLAMA_MODEL", "llama3")
     return status
+
+
+@app.options("/v1/ocr-extract")
+async def ocr_extract_options(request: Request):
+    """Handle CORS preflight requests for /v1/ocr-extract"""
+    # Get the origin from the request
+    origin = request.headers.get("origin", "")
+    
+    # Check if origin is allowed
+    if ALLOW_ORIGINS:
+        allowed_list = [o.strip().rstrip('/') for o in ALLOW_ORIGINS.split(",") if o.strip()]
+        if origin and origin.rstrip('/') in allowed_list:
+            allow_origin = origin
+        elif "*" in allowed_list:
+            allow_origin = "*"
+        else:
+            allow_origin = allowed_list[0] if allowed_list else "*"
+    else:
+        allow_origin = "*"
+    
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": allow_origin,
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
 
 
 @app.post("/v1/ocr-extract", response_model=OCRResponse)
