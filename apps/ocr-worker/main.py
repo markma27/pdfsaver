@@ -48,10 +48,17 @@ _file_cache: Dict[str, Dict[str, Any]] = {}
 # If ALLOW_ORIGINS is set, use it; otherwise allow all origins (for development)
 if ALLOW_ORIGINS:
     # Parse comma-separated origins
-    allowed_origins = [origin.strip() for origin in ALLOW_ORIGINS.split(",") if origin.strip()]
-    # Also add the single ALLOW_ORIGIN if set
-    if ALLOW_ORIGIN and ALLOW_ORIGIN not in allowed_origins:
-        allowed_origins.append(ALLOW_ORIGIN)
+    # Remove trailing slashes and strip whitespace
+    allowed_origins = [
+        origin.strip().rstrip('/') 
+        for origin in ALLOW_ORIGINS.split(",") 
+        if origin.strip()
+    ]
+    # Also add the single ALLOW_ORIGIN if set (remove trailing slash)
+    if ALLOW_ORIGIN:
+        clean_origin = ALLOW_ORIGIN.strip().rstrip('/')
+        if clean_origin not in allowed_origins:
+            allowed_origins.append(clean_origin)
 else:
     # Default: allow all origins (for development)
     # In production, set ALLOW_ORIGINS environment variable
@@ -61,9 +68,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 
@@ -154,9 +162,9 @@ def get_month_num(date_iso: str) -> str:
         parts = date_iso.split("-")
         if len(parts) >= 2:
             month = int(parts[1])
-        else:
+                    else:
             return "00"
-    else:
+                else:
         # YYYYMMDD format
         if len(date_iso) >= 6:
             month = int(date_iso[4:6])
@@ -285,17 +293,17 @@ async def ocr_extract(
     """
     # Verify token (only if OCR_TOKEN is set and not default)
     if OCR_TOKEN and OCR_TOKEN != "change-me":
-        if not authorization:
-            raise HTTPException(status_code=401, detail="Missing Authorization header")
-        
-        try:
-            scheme, token = authorization.split()
-            if scheme.lower() != "bearer":
-                raise HTTPException(status_code=401, detail="Invalid authorization scheme")
-            if token != OCR_TOKEN:
-                raise HTTPException(status_code=403, detail="Invalid token")
-        except ValueError:
-            raise HTTPException(status_code=401, detail="Invalid authorization header")
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    
+    try:
+        scheme, token = authorization.split()
+        if scheme.lower() != "bearer":
+            raise HTTPException(status_code=401, detail="Invalid authorization scheme")
+        if token != OCR_TOKEN:
+            raise HTTPException(status_code=403, detail="Invalid token")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
     
     # Check file extension
     if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -340,19 +348,19 @@ async def ocr_extract(
         # Check cache
         if file_hash in _file_cache:
             cached_result = _file_cache[file_hash]
-            print(f"Cache hit for {file.filename}")
+                print(f"Cache hit for {file.filename}")
             # Add Num prefix to cached filename
             cached_filename = add_num_prefix(
                 cached_result["suggested_filename"],
                 cached_result["fields"].get("date_iso")
             )
-            return OCRResponse(
+                return OCRResponse(
                 has_text=has_text,
-                ocred=ocred,
+                    ocred=ocred,
                 pages_used=2,
-                fields=cached_result["fields"],
+                    fields=cached_result["fields"],
                 suggested_filename=cached_filename
-            )
+                )
         
         # Initialize fields
         fields = {
@@ -370,13 +378,13 @@ async def ocr_extract(
                 # Try combined LLM call first (faster - single HTTP request)
                 # Reduce text sample size for faster processing (2500 chars is usually enough)
                 combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=2500)
-                if combined_result:
-                    fields.update({
-                        "doc_type": combined_result.get("doc_type"),
-                        "issuer": combined_result.get("issuer"),
+            if combined_result:
+                fields.update({
+                    "doc_type": combined_result.get("doc_type"),
+                    "issuer": combined_result.get("issuer"),
                         "date_iso": combined_result.get("date_iso")
-                    })
-                    suggested_filename = combined_result.get("suggested_filename")
+                })
+                suggested_filename = combined_result.get("suggested_filename")
         
         # Fallback: Use separate LLM calls if combined call not available or failed
         if not suggested_filename and LLM_AVAILABLE:
