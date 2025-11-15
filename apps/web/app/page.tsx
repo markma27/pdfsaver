@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { Dropzone } from '@/components/Dropzone';
 import { ResultsTable, ProcessedFile } from '@/components/ResultsTable';
+import { PDFPreview } from '@/components/PDFPreview';
 import { Status } from '@/components/StatusBadge';
 import { extractText, needsOCR } from '@/lib/pdf/extractText';
 import { classify, DetectedFields } from '@/lib/pdf/classify';
@@ -14,6 +15,8 @@ export default function Home() {
   const [files, setFiles] = useState<ProcessedFile[]>([]);
   const [processing, setProcessing] = useState(false);
   const [processingCount, setProcessingCount] = useState(0);
+  const [previewFile, setPreviewFile] = useState<File | null>(null);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const fileHashesRef = useRef<Set<string>>(new Set());
   
   const processFile = useCallback(
@@ -348,9 +351,6 @@ export default function Home() {
     );
   }, []);
   
-  const handleRemove = useCallback((id: string) => {
-    setFiles(prev => prev.filter(f => f.id !== id));
-  }, []);
   
   const handleDownloadFile = useCallback(async (id: string) => {
     const file = files.find(f => f.id === id);
@@ -416,62 +416,103 @@ export default function Home() {
     }
     if (confirm(`Are you sure you want to remove all ${files.length} file(s)?`)) {
       setFiles([]);
+      setPreviewFile(null);
+      setSelectedFileId(null);
       fileHashesRef.current.clear();
     }
   }, [files]);
+
+  const handlePreview = useCallback((file: ProcessedFile) => {
+    setPreviewFile(file.originalFile);
+    setSelectedFileId(file.id);
+  }, []);
+
+  const handleRemove = useCallback((id: string) => {
+    setFiles(prev => {
+      const updated = prev.filter(f => f.id !== id);
+      // Clear preview if removed file was being previewed
+      if (selectedFileId === id) {
+        setPreviewFile(null);
+        setSelectedFileId(null);
+      }
+      return updated;
+    });
+  }, [selectedFileId]);
   
   const readyCount = files.filter(
     f => f.status === 'ready' || f.status === 'needs-review'
   ).length;
   
   return (
-    <main className="min-h-screen py-8 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="text-center mb-8">
+    <main className="min-h-screen bg-gray-50">
+      <div className="max-w-full mx-auto p-4 sm:p-6 lg:p-8">
+        {/* Header */}
+        <div className="mb-6">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">PDFsaver</h1>
           <p className="text-lg text-gray-600">
             Bulk upload PDF files, automatically extract key information and rename
           </p>
         </div>
-        
-        <Dropzone
-          onFilesSelected={handleFilesSelected}
-        />
-        
-        {processing && (
-          <div className="mt-4 text-center text-sm text-gray-600">
-            Processing {processingCount} file{processingCount !== 1 ? 's' : ''}...
-          </div>
-        )}
-        
-        <ResultsTable
-          files={files}
-          onFilenameChange={handleFilenameChange}
-          onDownload={handleDownloadFile}
-          onOCRRequest={
-            process.env.NEXT_PUBLIC_OCR_URL ? handleOCRRequest : undefined
-          }
-          onRemove={handleRemove}
-        />
-        
+
+        {/* Action Buttons - Top Left */}
         {files.length > 0 && (
-          <div className="mt-8 text-center flex justify-center gap-4">
+          <div className="mb-4 flex gap-3">
             {readyCount > 0 && (
               <button
                 onClick={handleDownloadAll}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
                 Download ({readyCount} file{readyCount !== 1 ? 's' : ''})
               </button>
             )}
             <button
               onClick={handleClearAll}
-              className="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2"
+              className="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2"
             >
               Clear All ({files.length} file{files.length !== 1 ? 's' : ''})
             </button>
           </div>
         )}
+
+        {/* Main Layout - Left/Right Split */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[calc(100vh-250px)]">
+          {/* Left Column */}
+          <div className="flex flex-col space-y-4 min-h-0">
+            {/* Dropzone */}
+            <div className="flex-shrink-0">
+              <Dropzone
+                onFilesSelected={handleFilesSelected}
+              />
+            </div>
+            
+            {/* Processing Status */}
+            {processing && (
+              <div className="text-sm text-gray-600">
+                Processing {processingCount} file{processingCount !== 1 ? 's' : ''}...
+              </div>
+            )}
+            
+            {/* File List */}
+            <div className="flex-1 overflow-y-auto min-h-0">
+              <ResultsTable
+                files={files}
+                onFilenameChange={handleFilenameChange}
+                onDownload={handleDownloadFile}
+                onOCRRequest={
+                  process.env.NEXT_PUBLIC_OCR_URL ? handleOCRRequest : undefined
+                }
+                onRemove={handleRemove}
+                onPreview={handlePreview}
+                selectedFileId={selectedFileId}
+              />
+            </div>
+          </div>
+
+          {/* Right Column - PDF Preview */}
+          <div className="min-h-0">
+            <PDFPreview file={previewFile} />
+          </div>
+        </div>
       </div>
     </main>
   );
