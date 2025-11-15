@@ -11,7 +11,8 @@ export type DocType =
   | 'BuyContract'
   | 'SellContract'
   | 'HoldingStatement'
-  | 'TaxStatement';
+  | 'TaxStatement'
+  | 'NetAssetSummaryStatement';
 
 export interface DetectedFields {
   doc_type: DocType | null;
@@ -36,6 +37,26 @@ export async function classifyDocType(
   let bestMatch: { type: DocType; score: number } | null = null;
   
   for (const [type, patterns] of Object.entries(rules.types)) {
+    // Check exclude patterns first - if any exclude keyword is found, skip this type
+    if (patterns.exclude) {
+      const hasExclude = patterns.exclude.some(exclude =>
+        upperText.includes(exclude.toUpperCase())
+      );
+      if (hasExclude) {
+        continue; // Skip this document type
+      }
+    }
+    
+    // Check require_any patterns - at least one must be present
+    if (patterns.require_any) {
+      const hasRequired = patterns.require_any.some(req =>
+        upperText.includes(req.toUpperCase())
+      );
+      if (!hasRequired) {
+        continue; // Skip this document type if require_any not met
+      }
+    }
+    
     let score = 0;
     const mustMatches = patterns.must.filter(must =>
       upperText.includes(must.toUpperCase())
@@ -51,6 +72,14 @@ export async function classifyDocType(
       score = 50 + hintMatches.length * 5;
     } else if (hintMatches.length > 0) {
       score = 30 + hintMatches.length * 5;
+    }
+    
+    // Boost score if require_any patterns are present
+    if (patterns.require_any && score > 0) {
+      const requiredMatches = patterns.require_any.filter(req =>
+        upperText.includes(req.toUpperCase())
+      ).length;
+      score += requiredMatches * 10; // Boost for required patterns
     }
     
     if (score > 0 && (!bestMatch || score > bestMatch.score)) {

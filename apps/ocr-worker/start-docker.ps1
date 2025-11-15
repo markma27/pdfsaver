@@ -23,7 +23,7 @@ if (-not $ollamaUrl) {
     $ollamaUrl = "http://host.docker.internal:11434"
 }
 if (-not $ollamaModel) {
-    $ollamaModel = "llama3"
+    $ollamaModel = "qwen2.5:7b"
 }
 
 $dockerArgs = @(

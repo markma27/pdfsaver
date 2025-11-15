@@ -61,9 +61,12 @@ export function Dropzone({ onFilesSelected, disabled = false }: DropzoneProps) {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={`
-        border-2 border-dashed rounded-lg p-8 text-center transition-colors
-        ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300'}
-        ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-gray-400'}
+        border-2 border-dashed rounded-xl p-10 text-center transition-all duration-200
+        ${isDragging 
+          ? 'border-blue-500 bg-blue-50/50 shadow-lg scale-[1.01]' 
+          : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50/50'
+        }
+        ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
       `}
     >
       <input
@@ -80,7 +83,9 @@ export function Dropzone({ onFilesSelected, disabled = false }: DropzoneProps) {
         className={`cursor-pointer ${disabled ? 'pointer-events-none' : ''}`}
       >
         <svg
-          className="mx-auto h-12 w-12 text-gray-400"
+          className={`mx-auto h-14 w-14 transition-colors ${
+            isDragging ? 'text-blue-500' : 'text-slate-400'
+          }`}
           stroke="currentColor"
           fill="none"
           viewBox="0 0 48 48"
@@ -93,11 +98,11 @@ export function Dropzone({ onFilesSelected, disabled = false }: DropzoneProps) {
             strokeLinejoin="round"
           />
         </svg>
-        <div className="mt-4">
-          <p className="text-sm text-gray-600">
-            <span className="font-semibold">Click to select files</span> or drag and drop PDF files here
+        <div className="mt-5">
+          <p className="text-base text-slate-700 font-medium">
+            <span className="font-semibold text-slate-900">Click to select files</span> or drag and drop PDF files here
           </p>
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-sm text-slate-500 mt-2 font-normal">
             Supports bulk upload (PDF format only)
           </p>
         </div>

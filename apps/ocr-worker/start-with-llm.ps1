@@ -23,7 +23,7 @@ try {
 }
 
 Write-Host "`nStarting OCR Worker with LLM enabled..." -ForegroundColor Green
-Write-Host "Model: gemma3:1b" -ForegroundColor Cyan
+Write-Host "Model: qwen2.5:7b" -ForegroundColor Cyan
 
 docker run -d `
     -p 8123:8123 `
@@ -31,7 +31,7 @@ docker run -d `
     -e ALLOW_ORIGIN=http://localhost:3000 `
     -e USE_LLM=true `
     -e OLLAMA_URL=http://host.docker.internal:11434 `
-    -e OLLAMA_MODEL=gemma3:1b `
+    -e OLLAMA_MODEL=qwen2.5:7b `
     --name pdfsaver-ocr `
     pdfsaver-ocr-worker
 
@@ -39,7 +39,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "`nOCR Worker started successfully!" -ForegroundColor Green
     Write-Host "Container name: pdfsaver-ocr" -ForegroundColor Cyan
     Write-Host "Port: 8123" -ForegroundColor Cyan
-    Write-Host "LLM: gemma3:1b" -ForegroundColor Cyan
+    Write-Host "LLM: qwen2.5:7b" -ForegroundColor Cyan
     Write-Host "`nTo view logs: docker logs -f pdfsaver-ocr" -ForegroundColor Yellow
     Write-Host "To stop: docker stop pdfsaver-ocr" -ForegroundColor Yellow
     Write-Host "`nWaiting for container to be ready..." -ForegroundColor Cyan

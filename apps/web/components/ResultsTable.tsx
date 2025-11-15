@@ -80,16 +80,16 @@ export function ResultsTable({
   }
   
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {files.map(file => (
         <div
           key={file.id}
           onClick={() => handleFileClick(file)}
           className={`
-            p-4 border rounded-lg cursor-pointer transition-colors
+            p-4 border rounded-xl cursor-pointer transition-all duration-200 bg-white
             ${selectedFileId === file.id 
-              ? 'border-blue-500 bg-blue-50' 
-              : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+              ? 'border-blue-500 bg-blue-50/50 shadow-md ring-2 ring-blue-200' 
+              : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50/50 hover:shadow-sm'
             }
           `}
         >
@@ -102,11 +102,11 @@ export function ResultsTable({
                 )}
               </div>
               
-              <div className="text-sm font-medium text-gray-900 mb-1 truncate" title={file.originalName}>
+              <div className="text-sm font-semibold text-slate-900 mb-1.5 truncate" title={file.originalName}>
                 {file.originalName}
               </div>
               
-              <div className="text-sm text-gray-600">
+              <div className="text-sm text-slate-600">
                 {editingId === file.id ? (
                   <div className="flex items-center gap-2">
                     <input
@@ -116,7 +116,7 @@ export function ResultsTable({
                       onBlur={() => handleEditSave(file.id)}
                       onKeyDown={e => handleKeyDown(e, file.id)}
                       onClick={e => e.stopPropagation()}
-                      className="flex-1 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-900 font-medium"
                       autoFocus
                     />
                     <button
@@ -124,13 +124,13 @@ export function ResultsTable({
                         e.stopPropagation();
                         handleEditCancel();
                       }}
-                      className="text-gray-500 hover:text-gray-700 text-xs px-2 py-1"
+                      className="text-slate-500 hover:text-slate-700 text-xs px-3 py-1.5 rounded-md hover:bg-slate-100 font-medium"
                     >
                       Cancel
                     </button>
                   </div>
                 ) : file.status === 'processing' || file.status === 'ocr-processing' ? (
-                  <span className="text-gray-400 italic">pending...</span>
+                  <span className="text-slate-400 italic font-medium">pending...</span>
                 ) : file.status === 'ready' || file.status === 'needs-review' ? (
                   <div className="flex items-center gap-2">
                     <button
@@ -138,21 +138,21 @@ export function ResultsTable({
                         e.stopPropagation();
                         onDownload && onDownload(file.id);
                       }}
-                      className="text-blue-600 hover:text-blue-800 underline break-words text-left"
+                      className="text-blue-600 hover:text-blue-700 underline break-words text-left font-medium hover:no-underline"
                       title="Click to download file"
                     >
                       {file.editedFilename}
                     </button>
                     <button
                       onClick={e => handleEditStart(file, e)}
-                      className="text-gray-400 hover:text-gray-600 text-xs px-2 py-1"
+                      className="text-slate-400 hover:text-slate-600 text-xs px-2 py-1 rounded-md hover:bg-slate-100 font-medium"
                       title="Click to edit filename"
                     >
                       Edit
                     </button>
                   </div>
                 ) : (
-                  <span className="text-gray-400 break-words">{file.editedFilename}</span>
+                  <span className="text-slate-400 break-words font-medium">{file.editedFilename}</span>
                 )}
               </div>
             </div>
@@ -164,7 +164,7 @@ export function ResultsTable({
                     e.stopPropagation();
                     onOCRRequest(file.id);
                   }}
-                  className="text-xs text-purple-600 hover:text-purple-800 px-2 py-1 rounded hover:bg-purple-50"
+                  className="text-xs text-purple-600 hover:text-purple-700 px-3 py-1.5 rounded-lg hover:bg-purple-50 font-semibold transition-colors"
                 >
                   Process OCR
                 </button>
@@ -175,7 +175,7 @@ export function ResultsTable({
                     e.stopPropagation();
                     onRemove(file.id);
                   }}
-                  className="text-xs text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-50"
+                  className="text-xs text-red-600 hover:text-red-700 px-3 py-1.5 rounded-lg hover:bg-red-50 font-semibold transition-colors"
                 >
                   Remove
                 </button>

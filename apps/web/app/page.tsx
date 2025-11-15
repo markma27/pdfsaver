@@ -4,6 +4,7 @@ import React, { useState, useCallback, useRef } from 'react';
 import { Dropzone } from '@/components/Dropzone';
 import { ResultsTable, ProcessedFile } from '@/components/ResultsTable';
 import { PDFPreview } from '@/components/PDFPreview';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Status } from '@/components/StatusBadge';
 import { extractText, needsOCR } from '@/lib/pdf/extractText';
 import { classify, DetectedFields } from '@/lib/pdf/classify';
@@ -17,6 +18,7 @@ export default function Home() {
   const [processingCount, setProcessingCount] = useState(0);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const fileHashesRef = useRef<Set<string>>(new Set());
   
   const processFile = useCallback(
@@ -414,13 +416,20 @@ export default function Home() {
     if (files.length === 0) {
       return;
     }
-    if (confirm(`Are you sure you want to remove all ${files.length} file(s)?`)) {
-      setFiles([]);
-      setPreviewFile(null);
-      setSelectedFileId(null);
-      fileHashesRef.current.clear();
-    }
+    setShowConfirmDialog(true);
   }, [files]);
+
+  const handleConfirmClearAll = useCallback(() => {
+    setFiles([]);
+    setPreviewFile(null);
+    setSelectedFileId(null);
+    fileHashesRef.current.clear();
+    setShowConfirmDialog(false);
+  }, []);
+
+  const handleCancelClearAll = useCallback(() => {
+    setShowConfirmDialog(false);
+  }, []);
 
   const handlePreview = useCallback((file: ProcessedFile) => {
     setPreviewFile(file.originalFile);
@@ -444,30 +453,46 @@ export default function Home() {
   ).length;
   
   return (
-    <main className="min-h-screen bg-gray-50">
+    <main className="min-h-screen bg-slate-50">
       <div className="max-w-full mx-auto p-4 sm:p-6 lg:p-8">
-        {/* Header */}
-        <div className="mb-6">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">PDFsaver</h1>
-          <p className="text-lg text-gray-600">
-            Bulk upload PDF files, automatically extract key information and rename
-          </p>
+        {/* Header with Logos */}
+        <div className="mb-8 relative">
+          {/* Logos - Top Right */}
+          <div className="absolute top-0 right-0 z-10 flex items-center gap-4">
+            <img
+              src="/jm-logo.svg"
+              alt="JM Logo"
+              className="h-16 sm:h-20 md:h-24 lg:h-28 w-auto"
+            />
+            <img
+              src="/pg-logo.svg"
+              alt="PG Logo"
+              className="h-16 sm:h-20 md:h-24 lg:h-28 w-auto"
+            />
+          </div>
+          
+          <div className="pr-56 sm:pr-72 md:pr-80 lg:pr-96">
+            <h1 className="text-4xl sm:text-5xl font-bold text-slate-900 mb-3 tracking-tight">PDFsaver</h1>
+            <p className="text-base sm:text-lg text-slate-600 font-medium">
+              Bulk upload PDF files, automatically extract key information and rename
+            </p>
+          </div>
         </div>
 
         {/* Action Buttons - Top Left */}
         {files.length > 0 && (
-          <div className="mb-4 flex gap-3">
+          <div className="mb-6 flex gap-3">
             {readyCount > 0 && (
               <button
                 onClick={handleDownloadAll}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-5 rounded-lg shadow-sm hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 active:scale-95"
               >
                 Download ({readyCount} file{readyCount !== 1 ? 's' : ''})
               </button>
             )}
             <button
               onClick={handleClearAll}
-              className="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition-colors focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2"
+              className="bg-slate-500 hover:bg-slate-600 text-white font-semibold py-2.5 px-5 rounded-lg shadow-sm hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 active:scale-95"
             >
               Clear All ({files.length} file{files.length !== 1 ? 's' : ''})
             </button>
@@ -487,7 +512,8 @@ export default function Home() {
             
             {/* Processing Status */}
             {processing && (
-              <div className="text-sm text-gray-600">
+              <div className="text-sm text-slate-600 font-medium bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5">
+                <span className="inline-block w-2 h-2 bg-blue-600 rounded-full mr-2 animate-pulse"></span>
                 Processing {processingCount} file{processingCount !== 1 ? 's' : ''}...
               </div>
             )}
@@ -514,6 +540,18 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={showConfirmDialog}
+        title="Remove All Files"
+        message={`Are you sure you want to remove all ${files.length} file${files.length !== 1 ? 's' : ''}? This action cannot be undone.`}
+        confirmText="Remove All"
+        cancelText="Cancel"
+        onConfirm={handleConfirmClearAll}
+        onCancel={handleCancelClearAll}
+        variant="danger"
+      />
     </main>
   );
 }

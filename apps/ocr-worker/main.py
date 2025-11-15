@@ -5,6 +5,7 @@ FastAPI service for OCR processing of scanned PDFs
 
 import os
 import re
+import hashlib
 import tempfile
 import shutil
 from datetime import datetime
@@ -34,6 +35,9 @@ app = FastAPI(title="PDFsaver OCR Worker", version="1.0.0")
 # CORS configuration
 ALLOW_ORIGIN = os.getenv("ALLOW_ORIGIN", "http://localhost:3000")
 OCR_TOKEN = os.getenv("OCR_TOKEN", "change-me")
+
+# File cache for duplicate detection (in-memory)
+_file_cache: Dict[str, Dict[str, Any]] = {}
 
 # CORS middleware - allow all origins in development
 # We still require a Bearer token for auth, so origins are not security-critical here.
@@ -85,7 +89,8 @@ DOC_TYPE_PATTERNS = {
     },
     "DistributionStatement": {
         "must": ["Distribution statement", "Distribution Advice", "Distribution Payment", "DISTRIBUTION STATEMENT"],
-        "hints": ["Distribution", "Payment date", "Record date", "ETF", "Managed Fund", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution"]
+        "hints": ["Distribution", "Payment date", "Record date", "ETF", "Managed Fund", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution"],
+        "exclude": ["CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "We have bought", "Has bought", "Transaction Type: BUY", "Trade", "Brokerage", "Consideration"]
     },
     "CallAndDistributionStatement": {
         "must": ["Call and Distribution Statement", "CALL AND DISTRIBUTION STATEMENT", "Call & Distribution Statement", "Dist and Capital Call", "DIST AND CAPITAL CALL", "Distribution and Capital Call", "DISTRIBUTION AND CAPITAL CALL"],
@@ -96,28 +101,32 @@ DOC_TYPE_PATTERNS = {
         "hints": ["Transactions", "Unit Balance", "Redemption Price", "Buy-Sell Spread", "Fees and Costs"]
     },
     "BankStatement": {
-        "must": ["Bank Statement", "Account Statement", "Statement of Account"],
-        "hints": ["Account Number", "BSB", "Transaction", "Balance", "Bank"]
+        "must": ["Bank Statement"],
+        "hints": ["BSB", "Bank Account", "Banking", "Account Balance", "Bank Transaction", "Bank Statement"],
+        "exclude": ["CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", "Consideration", "NAV", "Net Asset Value", "Fund Performance", "Shareholder", "CHESS", "HIN", "SRN", "Portfolio", "Holdings"]
     },
     "BuyContract": {
-        "must": ["BUY CONFIRMATION", "BUY", "We have bought"],
-        "hints": ["Buy Confirmation", "Trade Confirmation", "Purchase", "Acquisition", "Buy Order", "CONTRACT NOTE", "We confirm the following transaction", "Transaction Type: BUY", "Consideration", "Brokerage"]
+        "must": ["CONFIRMATION", "BUY CONFIRMATION", "CONTRACT NOTE"],
+        "hints": ["We have bought", "Transaction Type: BUY", "Trade Confirmation", "Purchase", "Acquisition", "Buy Order", "Consideration", "Brokerage", "Trade Date", "Settlement Date", "Confirmation Date", "CONFIRMATION"],
+        "require_any": ["BUY", "We have bought", "Transaction Type: BUY"]
     },
     "SellContract": {
         "must": ["SELL"],
         "hints": ["Sell Confirmation", "Trade Confirmation", "Sale", "Disposal", "Sell Order", "CONTRACT NOTE", "We have sold", "We confirm the following transaction", "Transaction Type: SELL"]
     },
     "HoldingStatement": {
-        "must": ["CHESS", "Issuer Sponsored", "SRN", "HIN"],
-        "hints": ["Holder Identification Number", "Statement Date", "Holdings", "Portfolio"]
+        "must": ["CHESS", "Issuer Sponsored", "SRN", "HIN", "NAV statement", "NAV Statement", "Fund Performance", "Shareholder Value", "Shareholder Activity"],
+        "hints": ["Holder Identification Number", "Statement Date", "Holdings", "Portfolio", "Net Asset Value", "NAV per Share", "Shareholder", "Fund Performance", "Opening Balance", "Closing Balance"],
+        "exclude": ["CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", "Consideration", "We have bought", "We have sold"]
     },
     "TaxStatement": {
         "must": ["Annual Tax Statement", "Tax Summary", "AMMA", "AMIT", "NAV & Taxation Statement", "NAV AND TAXATION STATEMENT", "Taxation Statement", "TAXATION STATEMENT", "NAV and Taxation", "NAV AND TAXATION"],
         "hints": ["Tax Year", "Assessable Income", "Tax Return", "Taxation", "Tax Withheld", "Tax Payable"]
     },
     "NetAssetSummaryStatement": {
-        "must": ["Net Asset Summary", "NET ASSET SUMMARY", "NAV Summary", "NAV SUMMARY", "Net Asset Value Summary"],
-        "hints": ["Net Asset Value", "NAV", "Unit Price", "Asset Summary", "Asset Value", "Unit Balance", "Total Assets", "Total Liabilities"]
+        "must": ["Net Asset Summary", "NET ASSET SUMMARY", "NAV Summary", "NAV SUMMARY", "NAV statement", "NAV Statement", "Net Asset Value Summary"],
+        "hints": ["Net Asset Value", "NAV", "Unit Price", "Asset Summary", "Asset Value", "Unit Balance", "Total Assets", "Total Liabilities", "NAV per Share", "Fund Performance", "Shareholder Value"],
+        "exclude": ["CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", "Consideration", "Taxation", "Tax Year", "Tax Return"]
     }
 }
 
@@ -190,47 +199,91 @@ def classify_doc_type(text: str) -> Tuple[Optional[str], int]:
             best_match = "CallAndDistributionStatement"
             best_score = call_distribution_score
     
-    # Special handling: Check for Distribution Statement (lower priority than Call and Distribution)
-    # to avoid false positives with BuyContract when "BUY" appears in other contexts
-    if ("DISTRIBUTION STATEMENT" in upper_text or "DISTRIBUTION ADVICE" in upper_text or "DISTRIBUTION PAYMENT" in upper_text) and best_match != "CallAndDistributionStatement":
-        # Strong indicator of DistributionStatement
-        distribution_hints = ["DISTRIBUTION", "PAYMENT DATE", "RECORD DATE", "DISTRIBUTION RATE", "HOLDING BALANCE", "GROSS DISTRIBUTION", "NET DISTRIBUTION"]
-        hint_count = sum(1 for hint in distribution_hints if hint in upper_text)
-        distribution_score = 90 + hint_count * 5
-        if distribution_score > best_score:
-            best_match = "DistributionStatement"
-            best_score = distribution_score
+    # CRITICAL: Check for BuyContract BEFORE DistributionStatement (highest priority after CallAndDistributionStatement)
+    # BuyContract with "CONFIRMATION" + "BUY" should ALWAYS take precedence over DistributionStatement
+    # This prevents BuyContract documents from being misclassified when they contain "FUND" or "ETF" keywords
+    is_buy_contract = False
+    if ("CONFIRMATION" in upper_text or "BUY CONFIRMATION" in upper_text or "CONTRACT NOTE" in upper_text) and best_match != "CallAndDistributionStatement":
+        # Check require_any for BuyContract
+        buy_required = ["BUY", "WE HAVE BOUGHT", "TRANSACTION TYPE: BUY", "HAS BOUGHT"]
+        has_buy_required = any(req in upper_text for req in buy_required)
+        
+        if has_buy_required:
+            buy_hints = ["WE HAVE BOUGHT", "HAS BOUGHT", "TRANSACTION TYPE: BUY", "TRADE CONFIRMATION", "CONSIDERATION", "BROKERAGE", "TRADE DATE", "SETTLEMENT DATE", "CONFIRMATION DATE"]
+            hint_count = sum(1 for hint in buy_hints if hint in upper_text)
+            buy_score = 95 + hint_count * 5  # Increased score to 95 to ensure priority
+            if buy_score > best_score:
+                best_match = "BuyContract"
+                best_score = buy_score
+                is_buy_contract = True
+    
+    # Special handling: Check for Distribution Statement (lower priority than BuyContract)
+    # Only check if NOT a BuyContract and NOT a CallAndDistributionStatement
+    # CRITICAL: DistributionStatement must NOT be triggered if "CONFIRMATION" + "BUY" is present
+    if not is_buy_contract and best_match != "CallAndDistributionStatement":
+        if ("DISTRIBUTION STATEMENT" in upper_text or "DISTRIBUTION ADVICE" in upper_text or "DISTRIBUTION PAYMENT" in upper_text):
+            # CRITICAL: Exclude if this is clearly a BuyContract (CONFIRMATION + BUY)
+            is_confirmation_buy = ("CONFIRMATION" in upper_text and "BUY" in upper_text) or \
+                                 ("CONTRACT NOTE" in upper_text and "BUY" in upper_text) or \
+                                 ("WE HAVE BOUGHT" in upper_text or "HAS BOUGHT" in upper_text)
+            
+            if not is_confirmation_buy:
+                # Strong indicator of DistributionStatement
+                distribution_hints = ["DISTRIBUTION", "PAYMENT DATE", "RECORD DATE", "DISTRIBUTION RATE", "HOLDING BALANCE", "GROSS DISTRIBUTION", "NET DISTRIBUTION"]
+                hint_count = sum(1 for hint in distribution_hints if hint in upper_text)
+                distribution_score = 90 + hint_count * 5
+                if distribution_score > best_score:
+                    best_match = "DistributionStatement"
+                    best_score = distribution_score
+    
+    # Special handling: Check for NetAssetSummaryStatement BEFORE BankStatement (priority)
+    # NAV statements should be identified before BankStatement
+    if ("NAV STATEMENT" in upper_text or "NAV SUMMARY" in upper_text or "NET ASSET SUMMARY" in upper_text or 
+        ("NAV" in upper_text and "STATEMENT" in upper_text) or
+        ("FUND PERFORMANCE" in upper_text and "SHAREHOLDER" in upper_text)):
+        nav_hints = ["NAV", "NET ASSET VALUE", "UNIT PRICE", "FUND PERFORMANCE", "SHAREHOLDER VALUE", "SHAREHOLDER ACTIVITY", "OPENING BALANCE", "CLOSING BALANCE"]
+        hint_count = sum(1 for hint in nav_hints if hint in upper_text)
+        nav_score = 95 + hint_count * 5
+        if nav_score > best_score:
+            best_match = "NetAssetSummaryStatement"
+            best_score = nav_score
     
     for doc_type, patterns in DOC_TYPE_PATTERNS.items():
-        # Skip if we already found CallAndDistributionStatement or DistributionStatement with high confidence
-        if (best_match == "CallAndDistributionStatement" and best_score >= 95) or (best_match == "DistributionStatement" and best_score >= 90):
+        # Skip if we already found high-confidence matches
+        if (best_match == "CallAndDistributionStatement" and best_score >= 95) or \
+           (best_match == "DistributionStatement" and best_score >= 90) or \
+           (best_match == "BuyContract" and best_score >= 90) or \
+           (best_match == "NetAssetSummaryStatement" and best_score >= 95):
             continue
+        
+        # Check exclude patterns first - if any exclude keyword is found, skip this type
+        if "exclude" in patterns:
+            has_exclude = any(excl.upper() in upper_text for excl in patterns["exclude"])
+            if has_exclude:
+                continue  # Skip this document type
+        
+        # Check require_any patterns - at least one must be present
+        if "require_any" in patterns:
+            has_required = any(req.upper() in upper_text for req in patterns["require_any"])
+            if not has_required:
+                continue  # Skip this document type if require_any not met
             
         score = 0
         must_matches = [m for m in patterns["must"] if m.upper() in upper_text]
         hint_matches = [h for h in patterns["hints"] if h.upper() in upper_text]
         
-        # For BuyContract, require more specific indicators to avoid false positives
-        if doc_type == "BuyContract":
-            # Require at least one of: "BUY CONFIRMATION", "We have bought", or multiple strong hints
-            has_buy_confirmation = "BUY CONFIRMATION" in upper_text or "WE HAVE BOUGHT" in upper_text
-            strong_hints = ["BUY CONFIRMATION", "TRADE CONFIRMATION", "CONSIDERATION", "BROKERAGE", "TRANSACTION TYPE: BUY"]
-            strong_hint_count = sum(1 for hint in strong_hints if hint in upper_text)
-            
-            if has_buy_confirmation:
-                score = 85 + len(hint_matches) * 5
-            elif "BUY" in upper_text and strong_hint_count >= 2:
-                score = 70 + len(hint_matches) * 5
-            elif "BUY" in upper_text:
-                score = 40 + len(hint_matches) * 3  # Lower score for just "BUY"
-        else:
-            # Standard scoring for other document types
-            if len(must_matches) == len(patterns["must"]):
-                score = 80 + len(hint_matches) * 5
-            elif len(must_matches) > 0:
-                score = 50 + len(hint_matches) * 5
-            elif len(hint_matches) > 0:
-                score = 30 + len(hint_matches) * 5
+        # Standard scoring for document types
+        if len(must_matches) == len(patterns["must"]):
+            score = 80 + len(hint_matches) * 5
+        elif len(must_matches) > 0:
+            score = 50 + len(hint_matches) * 5
+        elif len(hint_matches) > 0:
+            score = 30 + len(hint_matches) * 5
+        
+        # Boost score if require_any patterns are present
+        if "require_any" in patterns and score > 0:
+            required_matches = sum(1 for req in patterns["require_any"] if req.upper() in upper_text)
+            score += required_matches * 10  # Boost for required patterns
         
         if score > 0 and score > best_score:
             best_match = doc_type
@@ -239,9 +292,33 @@ def classify_doc_type(text: str) -> Tuple[Optional[str], int]:
     return best_match, best_score
 
 
-def detect_issuer(text: str) -> Optional[str]:
+def detect_issuer(text: str, doc_type: Optional[str] = None) -> Optional[str]:
     """Detect issuer from text"""
     upper_text = text.upper()
+    
+    # Special handling for BuyContract/SellContract - extract investment/security name
+    if doc_type in ["BuyContract", "SellContract"]:
+        # Try to extract investment/security name from common patterns
+        patterns = [
+            r"(?i)(?:Security\s+Description|Investment|Security|Code)[:\s]+([A-Z][A-Za-z0-9\s&.,()-]+?)(?:\n|$|Security|Investment|Code|Consideration|Brokerage|Trade)",
+            r"(?i)(?:We\s+have\s+(?:bought|sold))[:\s]+([A-Z][A-Za-z0-9\s&.,()-]+?)(?:\n|$|Security|Investment|Code|Consideration|Brokerage)",
+            r"(?i)(?:Description|Name)[:\s]+([A-Z][A-Za-z0-9\s&.,()-]{5,}?)(?:\n|$|Security|Investment|Code|Consideration|Brokerage|Trade)",
+            # Match common investment name patterns (e.g., "Insurance Australia Group Ltd", "BRAMBLES LIMITED")
+            r"(?i)\b([A-Z][A-Za-z0-9\s&.,()-]{10,}?(?:Ltd|Limited|Trust|Group|Corporation|Corp|Company|Co|Holdings|Holdings Ltd|Pty Ltd|PTY LTD))(?:\s+FRN|\s+Callable|\s+Matures|$|\n)",
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                issuer_name = match.group(1).strip()
+                # Clean up common suffixes and extra info
+                issuer_name = re.sub(r'\s+(?:FRN|Callable|Matures|on|at).*$', '', issuer_name, flags=re.IGNORECASE)
+                issuer_name = re.sub(r'\s+\([^)]*\)', '', issuer_name)  # Remove parenthetical info
+                issuer_name = issuer_name.strip()
+                # Remove common prefixes
+                issuer_name = re.sub(r'^(?:Security\s+Description|Investment|Security|Code)[:\s]+', '', issuer_name, flags=re.IGNORECASE)
+                if len(issuer_name) > 5 and issuer_name.upper() not in ["UNKNOWN", "N/A", "NONE"]:
+                    return issuer_name
     
     # Check normalized variants
     for variant, canonical in ISSUERS["normalize"].items():
@@ -441,7 +518,10 @@ def build_filename(fields: Dict[str, Optional[str]]) -> str:
         doc_type_title = "NetAssetSummaryStatement"
     else:
         # For unknown types, convert to Title Case
-        doc_type_title = title_case(doc_type.replace("Statement", "").replace("Contract", ""))
+        if doc_type:
+            doc_type_title = title_case(doc_type.replace("Statement", "").replace("Contract", ""))
+        else:
+            doc_type_title = "Unknown"
     
     parts.append(doc_type_title)
     
@@ -457,7 +537,7 @@ async def health_check():
     if LLM_AVAILABLE:
         status["llm_available"] = check_ollama_available()
         if status["llm_available"]:
-            status["llm_model"] = os.getenv("OLLAMA_MODEL", "llama3")
+            status["llm_model"] = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
     return status
 
 
@@ -558,15 +638,21 @@ async def ocr_extract(
             cached_doc_type = cached_result["fields"].get("doc_type")
             cached_filename = cached_result.get("suggested_filename", "")
             
-            # Validate cached result - check if CallAndDistributionStatement/DistributionStatement was incorrectly cached as BuyContract
+            # Validate cached result - check for misclassifications
             upper_text_check = text_content.upper()
+            is_buy_contract_check_cache = (("CONFIRMATION" in upper_text_check or "BUY CONFIRMATION" in upper_text_check or "CONTRACT NOTE" in upper_text_check) and
+                                          ("BUY" in upper_text_check or "WE HAVE BOUGHT" in upper_text_check or "HAS BOUGHT" in upper_text_check or "TRANSACTION TYPE: BUY" in upper_text_check))
             is_call_and_distribution_check = ("CALL AND DISTRIBUTION STATEMENT" in upper_text_check or 
                                              "CALL & DISTRIBUTION STATEMENT" in upper_text_check)
             is_distribution_statement_check = (("DISTRIBUTION STATEMENT" in upper_text_check or 
                                                "DISTRIBUTION ADVICE" in upper_text_check or 
-                                               "DISTRIBUTION PAYMENT" in upper_text_check) and not is_call_and_distribution_check)
+                                               "DISTRIBUTION PAYMENT" in upper_text_check) and not is_call_and_distribution_check and not is_buy_contract_check_cache)
             
-            if (is_call_and_distribution_check or is_distribution_statement_check) and cached_doc_type == "BuyContract":
+            # CRITICAL: BuyContract takes priority - invalidate cache if BuyContract was incorrectly classified as DistributionStatement
+            if is_buy_contract_check_cache and (cached_doc_type == "DistributionStatement" or "distribution-statement" in cached_filename.lower() or "distributionstatement" in cached_filename.lower()):
+                print(f"Cache invalidated - BuyContract was incorrectly cached as DistributionStatement for {file.filename}")
+                del _file_cache[file_hash]
+            elif (is_call_and_distribution_check or is_distribution_statement_check) and cached_doc_type == "BuyContract":
                 # Cache has wrong classification, invalidate and reprocess
                 doc_type_name = "CallAndDistributionStatement" if is_call_and_distribution_check else "DistributionStatement"
                 print(f"Cache invalidated - {doc_type_name} was incorrectly cached as BuyContract for {file.filename}")
@@ -596,14 +682,19 @@ async def ocr_extract(
         }
         suggested_filename = None
         
-        # CRITICAL: Check for Call and Distribution Statement and Distribution Statement FIRST before LLM processing
-        # This ensures we catch it early and prevent LLM from misclassifying
+        # CRITICAL: Check for BuyContract FIRST (highest priority), then Call and Distribution Statement, then Distribution Statement
+        # This ensures BuyContract is identified before other types that might match keywords like "FUND" or "ETF"
         upper_text = text_content.upper()
+        
+        # Check for BuyContract FIRST - highest priority
+        is_buy_contract_check = (("CONFIRMATION" in upper_text or "BUY CONFIRMATION" in upper_text or "CONTRACT NOTE" in upper_text) and
+                                 ("BUY" in upper_text or "WE HAVE BOUGHT" in upper_text or "HAS BOUGHT" in upper_text or "TRANSACTION TYPE: BUY" in upper_text))
+        
         is_call_and_distribution = ("CALL AND DISTRIBUTION STATEMENT" in upper_text or 
                                     "CALL & DISTRIBUTION STATEMENT" in upper_text)
         is_distribution_statement = (("DISTRIBUTION STATEMENT" in upper_text or 
                                      "DISTRIBUTION ADVICE" in upper_text or 
-                                     "DISTRIBUTION PAYMENT" in upper_text) and not is_call_and_distribution)
+                                     "DISTRIBUTION PAYMENT" in upper_text) and not is_call_and_distribution and not is_buy_contract_check)
         
         # Always use LLM for classification and extraction if available
         fields = {
@@ -628,8 +719,15 @@ async def ocr_extract(
                 })
                 suggested_filename = combined_result.get("suggested_filename")
                 
-                # IMMEDIATE CORRECTION: If this is clearly a Call and Distribution Statement or Distribution Statement, override LLM
-                if is_call_and_distribution:
+                # IMMEDIATE CORRECTION: Check BuyContract FIRST (highest priority), then Call and Distribution Statement, then Distribution Statement
+                if is_buy_contract_check:
+                    if fields.get("doc_type") != "BuyContract":
+                        print(f"IMMEDIATE CORRECTION: LLM returned {fields.get('doc_type')}, forcing BuyContract for {file.filename}")
+                    fields["doc_type"] = "BuyContract"
+                    # Regenerate filename if it's wrong
+                    if suggested_filename and ("distribution-statement" in suggested_filename.lower() or "distributionstatement" in suggested_filename.lower()):
+                        suggested_filename = None  # Force regeneration
+                elif is_call_and_distribution:
                     if fields.get("doc_type") != "CallAndDistributionStatement":
                         print(f"IMMEDIATE CORRECTION: LLM returned {fields.get('doc_type')}, forcing CallAndDistributionStatement for {file.filename}")
                     fields["doc_type"] = "CallAndDistributionStatement"
@@ -649,8 +747,12 @@ async def ocr_extract(
             llm_fields = extract_with_llm(text_content)
             if llm_fields:
                 fields.update(llm_fields)
-                # IMMEDIATE CORRECTION: If this is clearly a Call and Distribution Statement or Distribution Statement, override LLM
-                if is_call_and_distribution:
+                # IMMEDIATE CORRECTION: Check BuyContract FIRST (highest priority), then Call and Distribution Statement, then Distribution Statement
+                if is_buy_contract_check:
+                    if fields.get("doc_type") != "BuyContract":
+                        print(f"IMMEDIATE CORRECTION: LLM returned {fields.get('doc_type')}, forcing BuyContract for {file.filename}")
+                    fields["doc_type"] = "BuyContract"
+                elif is_call_and_distribution:
                     if fields.get("doc_type") != "CallAndDistributionStatement":
                         print(f"IMMEDIATE CORRECTION: LLM returned {fields.get('doc_type')}, forcing CallAndDistributionStatement for {file.filename}")
                     fields["doc_type"] = "CallAndDistributionStatement"
@@ -662,13 +764,20 @@ async def ocr_extract(
         # Fallback: Use rule-based approach if LLM not available or failed
         # Also re-extract date using rules if LLM date seems incorrect or missing
         doc_type, confidence = classify_doc_type(text_content)
-        issuer = detect_issuer(text_content)
+        # Pass doc_type to detect_issuer for better extraction (especially for BuyContract)
+        issuer = detect_issuer(text_content, doc_type or fields.get("doc_type"))
         rule_based_date = extract_date(text_content, doc_type or fields.get("doc_type"))
         account_last4 = extract_account_last4(text_content)
         
-        # CRITICAL: Force CallAndDistributionStatement or DistributionStatement if rule-based classification detects it
+        # CRITICAL: Force BuyContract FIRST (highest priority), then CallAndDistributionStatement or DistributionStatement
         # This overrides any incorrect LLM classification
-        if is_call_and_distribution:
+        if is_buy_contract_check:
+            if doc_type == "BuyContract" or is_buy_contract_check:
+                # Force BuyContract - override LLM if it was wrong
+                if fields.get("doc_type") != "BuyContract":
+                    print(f"Force corrected doc_type from {fields.get('doc_type')} to BuyContract for {file.filename}")
+                fields["doc_type"] = "BuyContract"
+        elif is_call_and_distribution:
             if doc_type == "CallAndDistributionStatement":
                 # Force CallAndDistributionStatement - override LLM if it was wrong
                 if fields.get("doc_type") != "CallAndDistributionStatement":
@@ -688,9 +797,24 @@ async def ocr_extract(
                 fields["asx_code"] = asx_match.group(1).upper()
         
         # Fill in missing fields from rule-based extraction
-        # But prioritize rule-based CallAndDistributionStatement/DistributionStatement over LLM BuyContract
+        # CRITICAL: Prioritize BuyContract over everything else if "CONFIRMATION" + "BUY" is present
         if not fields["doc_type"]:
             fields["doc_type"] = doc_type
+        elif is_buy_contract_check:
+            # CRITICAL: BuyContract takes absolute priority - override any other classification
+            if fields.get("doc_type") != "BuyContract":
+                print(f"CRITICAL CORRECTION: Forcing BuyContract (was {fields.get('doc_type')}) for {file.filename} - CONFIRMATION + BUY detected")
+            fields["doc_type"] = "BuyContract"
+            # Invalidate suggested filename if it contains wrong document type
+            if suggested_filename and ("distribution-statement" in suggested_filename.lower() or "distributionstatement" in suggested_filename.lower()):
+                suggested_filename = None
+        elif fields.get("doc_type") == "DistributionStatement" and is_buy_contract_check:
+            # Rule-based says BuyContract, but LLM said DistributionStatement - trust rules (BuyContract wins)
+            fields["doc_type"] = "BuyContract"
+            print(f"CRITICAL CORRECTION: Corrected LLM DistributionStatement to BuyContract for {file.filename} - CONFIRMATION + BUY detected")
+            # Invalidate suggested filename if it contains wrong document type
+            if suggested_filename and ("distribution-statement" in suggested_filename.lower() or "distributionstatement" in suggested_filename.lower()):
+                suggested_filename = None
         elif fields.get("doc_type") == "BuyContract" and (doc_type == "CallAndDistributionStatement" or is_call_and_distribution):
             # Rule-based says CallAndDistributionStatement, but LLM said BuyContract - trust rules
             fields["doc_type"] = "CallAndDistributionStatement"
@@ -699,12 +823,14 @@ async def ocr_extract(
             if suggested_filename and "buy-contract" in suggested_filename.lower():
                 suggested_filename = None
         elif fields.get("doc_type") == "BuyContract" and (doc_type == "DistributionStatement" or is_distribution_statement):
-            # Rule-based says DistributionStatement, but LLM said BuyContract - trust rules
-            fields["doc_type"] = "DistributionStatement"
-            print(f"Corrected LLM BuyContract to DistributionStatement for {file.filename}")
-            # Invalidate suggested filename if it contains wrong document type
-            if suggested_filename and "buy-contract" in suggested_filename.lower():
-                suggested_filename = None
+            # This should not happen if is_buy_contract_check is true, but handle it anyway
+            if not is_buy_contract_check:
+                # Rule-based says DistributionStatement, but LLM said BuyContract - trust rules only if NOT clearly BuyContract
+                fields["doc_type"] = "DistributionStatement"
+                print(f"Corrected LLM BuyContract to DistributionStatement for {file.filename}")
+                # Invalidate suggested filename if it contains wrong document type
+                if suggested_filename and "buy-contract" in suggested_filename.lower():
+                    suggested_filename = None
         elif is_call_and_distribution:
             # Final safety check: if text clearly says Call and Distribution Statement, force it
             fields["doc_type"] = "CallAndDistributionStatement"
@@ -808,7 +934,17 @@ async def ocr_extract(
                         suggested_filename = build_filename(fields)
                         break
         
-        if fields.get("doc_type") == "CallAndDistributionStatement":
+        # FINAL SAFETY CHECK: Ensure filename matches doc_type
+        if fields.get("doc_type") == "BuyContract":
+            if suggested_filename and ("DistributionStatement" in suggested_filename or "distribution-statement" in suggested_filename.lower() or "distributionstatement" in suggested_filename.lower()):
+                print(f"FINAL SAFETY CHECK: Regenerating filename - detected wrong document type '{suggested_filename}' for BuyContract in {file.filename}")
+                suggested_filename = build_filename(fields)
+            # Double check - ensure filename contains BuyContract
+            elif suggested_filename and "BuyContract" not in suggested_filename:
+                # If doc_type is BuyContract but filename doesn't match, regenerate
+                print(f"FINAL SAFETY CHECK: Filename '{suggested_filename}' doesn't contain 'BuyContract', regenerating for {file.filename}")
+                suggested_filename = build_filename(fields)
+        elif fields.get("doc_type") == "CallAndDistributionStatement":
             if suggested_filename and ("BuyContract" in suggested_filename or "SellContract" in suggested_filename or "buy-contract" in suggested_filename.lower() or "sell-contract" in suggested_filename.lower()):
                 print(f"FINAL SAFETY CHECK: Regenerating filename - detected wrong document type '{suggested_filename}' for CallAndDistributionStatement in {file.filename}")
                 suggested_filename = build_filename(fields)

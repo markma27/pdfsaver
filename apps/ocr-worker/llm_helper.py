@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any
 
 # Ollama configuration
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")  # Default model
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")  # Default model
 USE_LLM = os.getenv("USE_LLM", "false").lower() == "true"
 
 
@@ -50,9 +50,15 @@ CRITICAL: Extract information ONLY from THIS document. Do NOT use information fr
 
 Important:
 - "issuer" should be the FUND/PRODUCT/COMPANY name from THIS document (extract from document text)
-  * For BuyContract/SellContract: Extract the INVESTMENT/SECURITY name being bought/sold (e.g., "Insurance Australia Group Ltd FRN...", "Scentre Group Trust 1 FRN...", "BRAMBLES LIMITED"). Do NOT use the broker name (e.g., "JBWere") or investor name
+  * For BuyContract/SellContract: CRITICAL - Extract the INVESTMENT/SECURITY name being bought/sold. Look for fields like:
+    - "Security Description:", "Investment:", "Security:", "Code:", "Description:", "Name:"
+    - The main investment/security name in transaction details (e.g., "Insurance Australia Group Ltd", "Scentre Group Trust 1", "BRAMBLES LIMITED", "BGF EUPN SPEC SI")
+    - Extract the COMPANY/TRUST/FUND name, NOT the broker name (e.g., "JBWere", "CommSec") or investor name
+    - Remove technical details like "FRN", "Callable", "Matures" dates, coupon rates unless essential
+    - Use the main company/trust name (e.g., "Insurance Australia Group" not "Insurance Australia Group Ltd FRN 3MBBSW...")
   * For other document types: Extract the fund/product/company name
 - Do NOT use investor/account holder names
+- Do NOT use broker names for BuyContract/SellContract
 - "asx_code" is the ASX stock code if available in THIS document (e.g., "BXB", "XRO", "REA")
 - For bank statements, "issuer" is the bank name
 - "date_iso" should be extracted from THIS document using these priorities:
@@ -66,21 +72,35 @@ Important:
 
 Document types:
 - DividendStatement: Dividend payment statements
-- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds). Look for "DISTRIBUTION STATEMENT", "Distribution Statement", "Distribution Advice", "Distribution Payment", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution". IMPORTANT: Do NOT confuse with BuyContract - Distribution Statements are about fund distributions, NOT purchases
+- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds). Look for "DISTRIBUTION STATEMENT", "Distribution Statement", "Distribution Advice", "Distribution Payment", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution". CRITICAL: Do NOT confuse with BuyContract - Distribution Statements are about fund distributions/payments, NOT purchases. If you see "CONFIRMATION" + "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement, even if the investment name contains "FUND" or "ETF"
 - PeriodicStatement: Periodic statements showing transactions, balances, fees (managed funds)
-- BankStatement: Bank account statements
-- BuyContract: Buy confirmations, trade confirmations for purchases, contract notes showing BUY transactions. Look for "BUY CONFIRMATION", "Buy Confirmation", "Trade Confirmation", "We have bought", "Transaction Type: BUY", "Consideration", "Brokerage". IMPORTANT: Must have clear purchase/transaction indicators, NOT just the word "BUY" in other contexts
+- BankStatement: Bank account statements from banks showing account balances, transactions, deposits, withdrawals. Look for "Bank Statement" in the title. CRITICAL: Do NOT classify as BankStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate trade confirmations, NOT bank statements
+- BuyContract: Buy confirmations, trade confirmations for purchases, contract notes showing BUY transactions. Look for "CONFIRMATION" (most common), "BUY CONFIRMATION", "CONTRACT NOTE", "We have bought", "Transaction Type: BUY", "Consideration", "Brokerage", "Trade Date", "Settlement Date", "Confirmation Date". CRITICAL: Documents with "CONFIRMATION" in the title AND "BUY" are ALWAYS BuyContract, NOT BankStatement. Even if they mention "Account" or "Account Number", if it's a confirmation document with BUY, it's a BuyContract
 - SellContract: Sell confirmations, trade confirmations for sales, contract notes showing SELL transactions. Look for "SELL CONFIRMATION", "Sell Confirmation", "Trade Confirmation", "We have sold", "Transaction Type: SELL"
-- HoldingStatement: Shareholding statements showing holdings/portfolio (CHESS, HIN, SRN, Portfolio Summary, Holdings Summary). Look for "CHESS", "HIN", "SRN", "Holdings", "Portfolio", "Shareholding Statement"
+- HoldingStatement: Shareholding statements showing holdings/portfolio (CHESS, HIN, SRN, Portfolio Summary, Holdings Summary). Look for "CHESS", "HIN", "SRN", "Holdings", "Portfolio", "Shareholding Statement", "NAV statement", "Fund Performance", "Shareholder Value", "Shareholder Activity". CRITICAL: Do NOT classify as HoldingStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate trade confirmations (BuyContract/SellContract), NOT holding statements
 - TaxStatement: Tax-related statements. Look for "Tax Statement", "Tax Summary", "AMMA", "AMIT", "Taxation Statement", "NAV & Taxation Statement", "Tax Year", "Assessable Income", "Tax Return", "Tax Withheld", "Tax Payable". IMPORTANT: "NAV & Taxation Statement" is a TaxStatement, NOT a HoldingStatement or NetAssetSummaryStatement
-- NetAssetSummaryStatement: Net Asset Value (NAV) summaries showing asset values, unit prices, net asset values WITHOUT tax information. Look for "Net Asset Summary", "NAV Summary", "Net Asset Value", "Unit Price", "Asset Summary", "NAV Statement" (without taxation). IMPORTANT: This is different from "NAV & Taxation Statement" which is a TaxStatement. If the document shows both NAV and tax information, it's a TaxStatement. If it only shows NAV/asset values without tax details, it's a NetAssetSummaryStatement
+- NetAssetSummaryStatement: Net Asset Value (NAV) summaries showing asset values, unit prices, net asset values WITHOUT tax information. Look for "Net Asset Summary", "NAV Summary", "NAV statement", "NAV Statement", "Net Asset Value", "Unit Price", "Asset Summary", "Fund Performance", "Shareholder Value", "Shareholder Activity", "Opening Balance", "Closing Balance". CRITICAL: Documents with "NAV statement" or "Fund Performance" are ALWAYS NetAssetSummaryStatement or HoldingStatement, NEVER BankStatement. IMPORTANT: This is different from "NAV & Taxation Statement" which is a TaxStatement. If the document shows both NAV and tax information, it's a TaxStatement. If it only shows NAV/asset values without tax details, it's a NetAssetSummaryStatement
 - CallAndDistributionStatement: Call and Distribution Statements combining capital calls with distributions. Look for "Call and Distribution Statement", "Dist and Capital Call", "Distribution and Capital Call", "Capital Call", "Notional Capital Call", "Called Capital", "Uncalled Committed Capital" combined with distribution information
 - Other: Other financial documents
 
-CRITICAL: When classifying documents:
-- If you see "DISTRIBUTION STATEMENT" or "Distribution Statement" in the title, it is ALWAYS a DistributionStatement, NOT a BuyContract
-- BuyContract requires clear purchase/transaction indicators like "BUY CONFIRMATION", "We have bought", "Consideration", "Brokerage"
+CRITICAL: When classifying documents (PRIORITY ORDER):
+1. **BuyContract has HIGHEST PRIORITY** - If you see "CONFIRMATION" (or "CONTRACT NOTE") AND "BUY" (or "We have bought" or "Has bought"), it is ALWAYS a BuyContract, regardless of other keywords like "FUND", "ETF", "Distribution", etc.
+   - BuyContract documents often contain investment names with "FUND" or "ETF" (e.g., "AORIS INT FUND", "ETF"), but these are the SECURITIES being bought, NOT distribution statements
+   - BuyContract documents may mention "Account No." but these refer to trading accounts, NOT bank accounts
+   - BuyContract requires clear purchase/transaction indicators: "CONFIRMATION" + "BUY", "We have bought", "Has bought", "Consideration", "Brokerage"
+   - CRITICAL: Even if the investment name contains "FUND" or "ETF", if the document says "CONFIRMATION" + "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement
+2. **CallAndDistributionStatement** - "Call and Distribution Statement" or "Dist and Capital Call" combined with distribution information
+3. **DistributionStatement** - "DISTRIBUTION STATEMENT" in the title, but ONLY if NOT a BuyContract (no "CONFIRMATION" + "BUY")
+   - Do NOT classify as DistributionStatement if you see "CONFIRMATION" + "BUY" - that's a BuyContract
+   - Distribution Statements are about fund distributions/payments, NOT purchases
+4. Other types follow normal rules
+
+Additional rules:
 - Do NOT classify as BuyContract just because the word "BUY" appears in other contexts (e.g., "Buy-Sell Spread" in fund statements)
+- Do NOT classify as HoldingStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate BuyContract/SellContract
+- BankStatement requires "Bank Statement" in the title AND bank-specific indicators like "BSB", "Bank Account", "Banking"
+- If you see "CONFIRMATION", "CONTRACT NOTE", "Brokerage", or "Consideration", it is NEVER a BankStatement
+- If you see "NAV statement", "NAV Statement", "Fund Performance", "Shareholder Value", or "Shareholder Activity", it is ALWAYS NetAssetSummaryStatement or HoldingStatement, NEVER BankStatement
 - "Net Asset Summary" or "NAV Summary" WITHOUT tax information = NetAssetSummaryStatement
 - "NAV & Taxation Statement" or documents with both NAV and tax information = TaxStatement
 
@@ -161,9 +181,15 @@ CRITICAL: Extract information ONLY from THIS document. Do NOT use information fr
 
 Important:
 - "issuer" should be the FUND/PRODUCT/COMPANY name from THIS document (extract from document text)
-  * For BuyContract/SellContract: Extract the INVESTMENT/SECURITY name being bought/sold (e.g., "Insurance Australia Group Ltd", "Scentre Group Trust 1", "BRAMBLES LIMITED"). Do NOT use the broker name (e.g., "JBWere") or investor name
+  * For BuyContract/SellContract: CRITICAL - Extract the INVESTMENT/SECURITY name being bought/sold. Look for fields like:
+    - "Security Description:", "Investment:", "Security:", "Code:", "Description:", "Name:"
+    - The main investment/security name in transaction details (e.g., "Insurance Australia Group Ltd", "Scentre Group Trust 1", "BRAMBLES LIMITED", "BGF EUPN SPEC SI")
+    - Extract the COMPANY/TRUST/FUND name, NOT the broker name (e.g., "JBWere", "CommSec") or investor name
+    - Remove technical details like "FRN", "Callable", "Matures" dates, coupon rates unless essential
+    - Use the main company/trust name (e.g., "Insurance Australia Group" not "Insurance Australia Group Ltd FRN 3MBBSW...")
   * For other document types: Extract the fund/product/company name
 - Do NOT use investor/account holder names
+- Do NOT use broker names for BuyContract/SellContract
 - "asx_code" is the ASX stock code if available in THIS document (e.g., "BXB", "XRO", "REA")
 - For bank statements, "issuer" is the bank name
 - "date_iso" should be extracted from THIS document using these priorities:
@@ -182,21 +208,35 @@ Important:
 
 Document types:
 - DividendStatement: Dividend payment statements
-- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds). Look for "DISTRIBUTION STATEMENT", "Distribution Statement", "Distribution Advice", "Distribution Payment", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution". IMPORTANT: Do NOT confuse with BuyContract - Distribution Statements are about fund distributions, NOT purchases
+- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds). Look for "DISTRIBUTION STATEMENT", "Distribution Statement", "Distribution Advice", "Distribution Payment", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution". CRITICAL: Do NOT confuse with BuyContract - Distribution Statements are about fund distributions/payments, NOT purchases. If you see "CONFIRMATION" + "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement, even if the investment name contains "FUND" or "ETF"
 - PeriodicStatement: Periodic statements showing transactions, balances, fees (managed funds)
-- BankStatement: Bank account statements
-- BuyContract: Buy confirmations, trade confirmations for purchases, contract notes showing BUY transactions. Look for "BUY CONFIRMATION", "Buy Confirmation", "Trade Confirmation", "We have bought", "Transaction Type: BUY", "Consideration", "Brokerage". IMPORTANT: Must have clear purchase/transaction indicators, NOT just the word "BUY" in other contexts
+- BankStatement: Bank account statements from banks showing account balances, transactions, deposits, withdrawals. Look for "Bank Statement" in the title. CRITICAL: Do NOT classify as BankStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate trade confirmations, NOT bank statements
+- BuyContract: Buy confirmations, trade confirmations for purchases, contract notes showing BUY transactions. Look for "CONFIRMATION" (most common), "BUY CONFIRMATION", "CONTRACT NOTE", "We have bought", "Transaction Type: BUY", "Consideration", "Brokerage", "Trade Date", "Settlement Date", "Confirmation Date". CRITICAL: Documents with "CONFIRMATION" in the title AND "BUY" are ALWAYS BuyContract, NOT BankStatement. Even if they mention "Account" or "Account Number", if it's a confirmation document with BUY, it's a BuyContract
 - SellContract: Sell confirmations, trade confirmations for sales, contract notes showing SELL transactions. Look for "SELL CONFIRMATION", "Sell Confirmation", "Trade Confirmation", "We have sold", "Transaction Type: SELL"
-- HoldingStatement: Shareholding statements showing holdings/portfolio (CHESS, HIN, SRN, Portfolio Summary, Holdings Summary). Look for "CHESS", "HIN", "SRN", "Holdings", "Portfolio", "Shareholding Statement"
+- HoldingStatement: Shareholding statements showing holdings/portfolio (CHESS, HIN, SRN, Portfolio Summary, Holdings Summary). Look for "CHESS", "HIN", "SRN", "Holdings", "Portfolio", "Shareholding Statement", "NAV statement", "Fund Performance", "Shareholder Value", "Shareholder Activity". CRITICAL: Do NOT classify as HoldingStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate trade confirmations (BuyContract/SellContract), NOT holding statements
 - TaxStatement: Tax-related statements. Look for "Tax Statement", "Tax Summary", "AMMA", "AMIT", "Taxation Statement", "NAV & Taxation Statement", "Tax Year", "Assessable Income", "Tax Return", "Tax Withheld", "Tax Payable". IMPORTANT: "NAV & Taxation Statement" is a TaxStatement, NOT a HoldingStatement or NetAssetSummaryStatement
-- NetAssetSummaryStatement: Net Asset Value (NAV) summaries showing asset values, unit prices, net asset values WITHOUT tax information. Look for "Net Asset Summary", "NAV Summary", "Net Asset Value", "Unit Price", "Asset Summary", "NAV Statement" (without taxation). IMPORTANT: This is different from "NAV & Taxation Statement" which is a TaxStatement. If the document shows both NAV and tax information, it's a TaxStatement. If it only shows NAV/asset values without tax details, it's a NetAssetSummaryStatement
+- NetAssetSummaryStatement: Net Asset Value (NAV) summaries showing asset values, unit prices, net asset values WITHOUT tax information. Look for "Net Asset Summary", "NAV Summary", "NAV statement", "NAV Statement", "Net Asset Value", "Unit Price", "Asset Summary", "Fund Performance", "Shareholder Value", "Shareholder Activity", "Opening Balance", "Closing Balance". CRITICAL: Documents with "NAV statement" or "Fund Performance" are ALWAYS NetAssetSummaryStatement or HoldingStatement, NEVER BankStatement. IMPORTANT: This is different from "NAV & Taxation Statement" which is a TaxStatement. If the document shows both NAV and tax information, it's a TaxStatement. If it only shows NAV/asset values without tax details, it's a NetAssetSummaryStatement
 - CallAndDistributionStatement: Call and Distribution Statements combining capital calls with distributions. Look for "Call and Distribution Statement", "Dist and Capital Call", "Distribution and Capital Call", "Capital Call", "Notional Capital Call", "Called Capital", "Uncalled Committed Capital" combined with distribution information
 - Other: Other financial documents
 
-CRITICAL: When classifying documents:
-- If you see "DISTRIBUTION STATEMENT" or "Distribution Statement" in the title, it is ALWAYS a DistributionStatement, NOT a BuyContract
-- BuyContract requires clear purchase/transaction indicators like "BUY CONFIRMATION", "We have bought", "Consideration", "Brokerage"
+CRITICAL: When classifying documents (PRIORITY ORDER):
+1. **BuyContract has HIGHEST PRIORITY** - If you see "CONFIRMATION" (or "CONTRACT NOTE") AND "BUY" (or "We have bought" or "Has bought"), it is ALWAYS a BuyContract, regardless of other keywords like "FUND", "ETF", "Distribution", etc.
+   - BuyContract documents often contain investment names with "FUND" or "ETF" (e.g., "AORIS INT FUND", "ETF"), but these are the SECURITIES being bought, NOT distribution statements
+   - BuyContract documents may mention "Account No." but these refer to trading accounts, NOT bank accounts
+   - BuyContract requires clear purchase/transaction indicators: "CONFIRMATION" + "BUY", "We have bought", "Has bought", "Consideration", "Brokerage"
+   - CRITICAL: Even if the investment name contains "FUND" or "ETF", if the document says "CONFIRMATION" + "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement
+2. **CallAndDistributionStatement** - "Call and Distribution Statement" or "Dist and Capital Call" combined with distribution information
+3. **DistributionStatement** - "DISTRIBUTION STATEMENT" in the title, but ONLY if NOT a BuyContract (no "CONFIRMATION" + "BUY")
+   - Do NOT classify as DistributionStatement if you see "CONFIRMATION" + "BUY" - that's a BuyContract
+   - Distribution Statements are about fund distributions/payments, NOT purchases
+4. Other types follow normal rules
+
+Additional rules:
 - Do NOT classify as BuyContract just because the word "BUY" appears in other contexts (e.g., "Buy-Sell Spread" in fund statements)
+- Do NOT classify as HoldingStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate BuyContract/SellContract
+- BankStatement requires "Bank Statement" in the title AND bank-specific indicators like "BSB", "Bank Account", "Banking"
+- If you see "CONFIRMATION", "CONTRACT NOTE", "Brokerage", or "Consideration", it is NEVER a BankStatement
+- If you see "NAV statement", "NAV Statement", "Fund Performance", "Shareholder Value", or "Shareholder Activity", it is ALWAYS NetAssetSummaryStatement or HoldingStatement, NEVER BankStatement
 - "Net Asset Summary" or "NAV Summary" WITHOUT tax information = NetAssetSummaryStatement
 - "NAV & Taxation Statement" or documents with both NAV and tax information = TaxStatement
 

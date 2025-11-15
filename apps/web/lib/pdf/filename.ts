@@ -86,6 +86,8 @@ export function buildFilename(fields: DetectedFields): string {
     docTypeTitle = 'BankStatement';
   } else if (fields.doc_type === 'PeriodicStatement') {
     docTypeTitle = 'PeriodicStatement';
+  } else if (fields.doc_type === 'NetAssetSummaryStatement') {
+    docTypeTitle = 'NetAssetSummaryStatement';
   } else {
     // For unknown types, convert to Title Case
     const cleaned = fields.doc_type?.replace('Statement', '').replace('Contract', '') || 'unknown';

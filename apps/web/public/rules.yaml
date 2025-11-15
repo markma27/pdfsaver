@@ -2,15 +2,25 @@ types:
   DividendStatement:
     must: ["Dividend statement", "Distribution statement"]
     hints: ["Record Date", "Payment Date", "DRP", "Dividend Reinvestment"]
+  BankStatement:
+    must: ["Bank Statement"]
+    hints: ["BSB", "Bank Account", "Banking", "Account Balance", "Bank Transaction", "Bank Statement"]
+    exclude: ["CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", "Consideration", "NAV", "Net Asset Value", "Fund Performance", "Shareholder", "CHESS", "HIN", "SRN", "Portfolio", "Holdings"]
   BuyContract:
-    must: ["CONTRACT NOTE", "BUY"]
-    hints: ["Purchase", "Acquisition"]
+    must: ["CONFIRMATION", "BUY CONFIRMATION", "CONTRACT NOTE"]
+    hints: ["We have bought", "Transaction Type: BUY", "Trade Confirmation", "Purchase", "Acquisition", "Buy Order", "Consideration", "Brokerage", "Trade Date", "Settlement Date", "Confirmation Date", "CONFIRMATION"]
+    require_any: ["BUY", "We have bought", "Transaction Type: BUY"]
   SellContract:
     must: ["CONTRACT NOTE", "SELL"]
     hints: ["Sale", "Disposal"]
   HoldingStatement:
-    must: ["CHESS", "Issuer Sponsored", "SRN", "HIN"]
-    hints: ["Holder Identification Number", "Statement Date", "Holdings"]
+    must: ["CHESS", "Issuer Sponsored", "SRN", "HIN", "NAV statement", "NAV Statement", "Fund Performance", "Shareholder Value", "Shareholder Activity"]
+    hints: ["Holder Identification Number", "Statement Date", "Holdings", "Portfolio", "Net Asset Value", "NAV per Share", "Shareholder", "Fund Performance", "Opening Balance", "Closing Balance"]
+    exclude: ["CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", "Consideration", "We have bought", "We have sold"]
+  NetAssetSummaryStatement:
+    must: ["Net Asset Summary", "NAV Summary", "NAV statement", "NAV Statement", "Net Asset Value Summary"]
+    hints: ["Net Asset Value", "NAV", "Unit Price", "Asset Summary", "Asset Value", "Unit Balance", "Total Assets", "Total Liabilities", "NAV per Share", "Fund Performance", "Shareholder Value"]
+    exclude: ["CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", "Consideration", "Taxation", "Tax Year", "Tax Return"]
   TaxStatement:
     must: ["Annual Tax Statement", "Tax Summary", "AMMA", "AMIT"]
     hints: ["Tax Year", "Assessable Income"]
