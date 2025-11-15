@@ -345,13 +345,91 @@ export default function Home() {
     [processFilesWithConcurrency]
   );
   
-  const handleFilenameChange = useCallback((id: string, newFilename: string) => {
+  const handleFilenameChange = useCallback(async (id: string, newFilename: string) => {
+    // Update local state
     setFiles(prev =>
       prev.map(f =>
         f.id === id ? { ...f, editedFilename: newFilename } : f
       )
     );
-  }, []);
+
+    // Send learning feedback to OCR Worker
+    const file = files.find(f => f.id === id);
+    if (!file || !process.env.NEXT_PUBLIC_OCR_URL) {
+      return;
+    }
+
+    // Only send learning feedback if filename was actually changed
+    if (file.suggestedFilename === newFilename) {
+      return;
+    }
+
+    try {
+      // Extract text sample from PDF (first 500 chars for learning)
+      let textSample = '';
+      try {
+        const extractResult = await extractText(file.originalFile, 1);
+        textSample = extractResult.text.substring(0, 500);
+      } catch (e) {
+        console.warn('Failed to extract text for learning:', e);
+        // Continue without text sample
+      }
+
+      // Call learning API - build URL from OCR URL
+      const ocrUrl = process.env.NEXT_PUBLIC_OCR_URL;
+      if (!ocrUrl) {
+        console.warn('OCR URL not configured, skipping learning feedback');
+        return;
+      }
+      
+      // Build learn URL by replacing the endpoint
+      let learnUrl: string;
+      if (ocrUrl.includes('/v1/ocr-extract')) {
+        learnUrl = ocrUrl.replace('/v1/ocr-extract', '/v1/learn-edit');
+      } else {
+        // Fallback: try to construct from base URL
+        const baseUrl = ocrUrl.replace(/\/v1\/.*$/, '');
+        learnUrl = `${baseUrl}/v1/learn-edit`;
+      }
+      
+      console.log('Sending learning feedback to:', learnUrl);
+      
+      try {
+        const response = await fetch(learnUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.NEXT_PUBLIC_OCR_TOKEN || ''}`
+          },
+          body: JSON.stringify({
+            original_filename: file.suggestedFilename,
+            edited_filename: newFilename,
+            fields: {
+              doc_type: file.fields.doc_type || null,
+              issuer: file.fields.issuer || null,
+              date_iso: file.fields.date_iso || null,
+              asx_code: file.fields.asx_code || null,
+              account_last4: file.fields.account_last4 || null
+            },
+            text_sample: textSample
+          })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          console.log('Learning feedback sent successfully:', result);
+        } else {
+          const errorText = await response.text();
+          console.warn(`Failed to send learning feedback (${response.status}):`, errorText || response.statusText);
+        }
+      } catch (fetchError) {
+        console.error('Network error sending learning feedback:', fetchError);
+      }
+    } catch (error) {
+      console.error('Error sending learning feedback:', error);
+      // Don't show error to user - learning is optional
+    }
+  }, [files]);
   
   
   const handleDownloadFile = useCallback(async (id: string) => {

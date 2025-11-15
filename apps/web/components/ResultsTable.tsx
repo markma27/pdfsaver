@@ -59,8 +59,12 @@ export function ResultsTable({
   
   const handleKeyDown = (e: React.KeyboardEvent, id: string) => {
     if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
       handleEditSave(id);
     } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
       handleEditCancel();
     }
   };
@@ -113,18 +117,44 @@ export function ResultsTable({
                       type="text"
                       value={editValue}
                       onChange={e => setEditValue(e.target.value)}
-                      onBlur={() => handleEditSave(file.id)}
-                      onKeyDown={e => handleKeyDown(e, file.id)}
+                      onKeyDown={e => {
+                        e.stopPropagation();
+                        handleKeyDown(e, file.id);
+                      }}
                       onClick={e => e.stopPropagation()}
+                      onBlur={e => {
+                        // Don't save on blur if clicking Save/Cancel buttons
+                        const relatedTarget = e.relatedTarget as HTMLElement;
+                        if (relatedTarget && (relatedTarget.closest('button') || relatedTarget.closest('input'))) {
+                          return;
+                        }
+                        // Small delay to allow button clicks to process first
+                        setTimeout(() => {
+                          if (editingId === file.id) {
+                            handleEditSave(file.id);
+                          }
+                        }, 200);
+                      }}
                       className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-900 font-medium"
                       autoFocus
                     />
                     <button
                       onClick={e => {
                         e.stopPropagation();
+                        e.preventDefault();
+                        handleEditSave(file.id);
+                      }}
+                      className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 text-xs px-3 py-1.5 rounded-md font-medium transition-colors"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={e => {
+                        e.stopPropagation();
+                        e.preventDefault();
                         handleEditCancel();
                       }}
-                      className="text-slate-500 hover:text-slate-700 text-xs px-3 py-1.5 rounded-md hover:bg-slate-100 font-medium"
+                      className="text-slate-500 hover:text-slate-700 text-xs px-3 py-1.5 rounded-md hover:bg-slate-100 font-medium transition-colors"
                     >
                       Cancel
                     </button>

@@ -5,8 +5,8 @@ Uses Ollama for local LLM inference to improve document classification and field
 
 import os
 import json
-import httpx
-from typing import Optional, Dict, Any
+import httpx  # type: ignore
+from typing import Optional, Dict, Any, List
 
 # Ollama configuration
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -37,72 +37,165 @@ def extract_with_llm(text: str, max_chars: int = 2000) -> Optional[Dict[str, Any
     # Truncate text to avoid token limits
     text_sample = text[:max_chars] if len(text) > max_chars else text
     
-    prompt = f"""Analyze this Australian financial document text and extract key information. Return ONLY a valid JSON object with these exact fields:
+    prompt = f"""You are analysing OCR text from an Australian financial document.
+
+Your job: 
+1. Classify the document.
+2. Extract key fields.
+
+Always follow the rules below EXACTLY.
+
+------------------------------------------
+TOP PRIORITY RULES (READ AND OBEY FIRST)
+------------------------------------------
+1. If the document contains BOTH "CONFIRMATION" and "BUY", it is ALWAYS a BuyContract. No exceptions.
+2. If the document contains BOTH "CONFIRMATION" and "SELL" (or "Buy/Sell: SELL"), it is ALWAYS a SellContract. No exceptions.
+3. NEVER use investor names, broker names, or service provider names (CommSec, JBWere, Ord Minnett, Morgan Stanley Fund Services, Computershare, Link Market Services, etc.) as issuer.
+4. For Share Summary/HoldingStatement documents: Extract the ACTUAL FUND NAME from the document title (e.g., "Highwest Global Offshore Fund, Ltd."), NOT the service provider name (e.g., "Morgan Stanley Fund Services").
+5. Only use information found IN THIS document. Ignore any previous documents.
+6. Output MUST be valid JSON. No explanation, no markdown, no backticks.
+
+------------------------------------------
+OUTPUT FORMAT (EXTRACTION MODE)
+------------------------------------------
+Return ONLY this JSON object:
+
 {{
-  "doc_type": "DividendStatement|DistributionStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|Other|null",
-  "issuer": "fund/product/company name (NOT investor name) or null",
-  "asx_code": "ASX code (e.g., BAOR, AAA) or null",
+  "doc_type": "DividendStatement|DistributionStatement|CapitalCallStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|Other|null",
+  "issuer": "fund/product/company name or null",
+  "asx_code": "ASX code or null",
   "date_iso": "YYYY-MM-DD or null",
   "account_last4": "last 4 digits or null"
 }}
 
-CRITICAL: Extract information ONLY from THIS document. Do NOT use information from previous documents.
+------------------------------------------
+DOCUMENT CLASSIFICATION RULES
+------------------------------------------
 
-Important:
-- "issuer" should be the FUND/PRODUCT/COMPANY name from THIS document (extract from document text)
-  * For BuyContract/SellContract: CRITICAL - Extract the INVESTMENT/SECURITY name being bought/sold. Look for fields like:
-    - "Security Description:", "Investment:", "Security:", "Code:", "Description:", "Name:"
-    - The main investment/security name in transaction details (e.g., "Insurance Australia Group Ltd", "Scentre Group Trust 1", "BRAMBLES LIMITED", "BGF EUPN SPEC SI")
-    - Extract the COMPANY/TRUST/FUND name, NOT the broker name (e.g., "JBWere", "CommSec") or investor name
-    - Remove technical details like "FRN", "Callable", "Matures" dates, coupon rates unless essential
-    - Use the main company/trust name (e.g., "Insurance Australia Group" not "Insurance Australia Group Ltd FRN 3MBBSW...")
-  * For other document types: Extract the fund/product/company name
-- Do NOT use investor/account holder names
-- Do NOT use broker names for BuyContract/SellContract
-- "asx_code" is the ASX stock code if available in THIS document (e.g., "BXB", "XRO", "REA")
-- For bank statements, "issuer" is the bank name
-- "date_iso" should be extracted from THIS document using these priorities:
-  * For DividendStatement: Use "Payment Date" first, then "Record Date", then "Statement Date"
-  * For DistributionStatement: Use "Payment Date" first, then "Record Date", then "Distribution Date"
-  * For BuyContract/SellContract: Use "Confirmation Date" first (e.g., "Confirmation date: 11/07/2025" → "2025-07-11"), then "Transaction Date", then "Trade Date", then "Settlement Date", then "As at Date"
-  * For other types: Use "Statement Date" or document date
-  * Format: YYYY-MM-DD (e.g., if you see "15/05/2024" or "15 May 2024", convert to "2024-05-15")
-  * IMPORTANT: Dates in DD/MM/YYYY format (Australian format) - day is first, month is second
-- "account_last4" should be the investor number or account last 4 digits from THIS document
+BuyContract (HIGHEST PRIORITY)
+- Keywords: "CONFIRMATION" + "BUY", "We have bought", "Contract Note", "Brokerage", "Consideration"
+- Securities may include "FUND" or "ETF" — still a BuyContract if confirmation + buy exists
+- If you see "CONFIRMATION" AND "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement
 
-Document types:
-- DividendStatement: Dividend payment statements
-- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds). Look for "DISTRIBUTION STATEMENT", "Distribution Statement", "Distribution Advice", "Distribution Payment", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution". CRITICAL: Do NOT confuse with BuyContract - Distribution Statements are about fund distributions/payments, NOT purchases. If you see "CONFIRMATION" + "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement, even if the investment name contains "FUND" or "ETF"
-- PeriodicStatement: Periodic statements showing transactions, balances, fees (managed funds)
-- BankStatement: Bank account statements from banks showing account balances, transactions, deposits, withdrawals. Look for "Bank Statement" in the title. CRITICAL: Do NOT classify as BankStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate trade confirmations, NOT bank statements
-- BuyContract: Buy confirmations, trade confirmations for purchases, contract notes showing BUY transactions. Look for "CONFIRMATION" (most common), "BUY CONFIRMATION", "CONTRACT NOTE", "We have bought", "Transaction Type: BUY", "Consideration", "Brokerage", "Trade Date", "Settlement Date", "Confirmation Date". CRITICAL: Documents with "CONFIRMATION" in the title AND "BUY" are ALWAYS BuyContract, NOT BankStatement. Even if they mention "Account" or "Account Number", if it's a confirmation document with BUY, it's a BuyContract
-- SellContract: Sell confirmations, trade confirmations for sales, contract notes showing SELL transactions. Look for "SELL CONFIRMATION", "Sell Confirmation", "Trade Confirmation", "We have sold", "Transaction Type: SELL"
-- HoldingStatement: Shareholding statements showing holdings/portfolio (CHESS, HIN, SRN, Portfolio Summary, Holdings Summary). Look for "CHESS", "HIN", "SRN", "Holdings", "Portfolio", "Shareholding Statement", "NAV statement", "Fund Performance", "Shareholder Value", "Shareholder Activity". CRITICAL: Do NOT classify as HoldingStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate trade confirmations (BuyContract/SellContract), NOT holding statements
-- TaxStatement: Tax-related statements. Look for "Tax Statement", "Tax Summary", "AMMA", "AMIT", "Taxation Statement", "NAV & Taxation Statement", "Tax Year", "Assessable Income", "Tax Return", "Tax Withheld", "Tax Payable". IMPORTANT: "NAV & Taxation Statement" is a TaxStatement, NOT a HoldingStatement or NetAssetSummaryStatement
-- NetAssetSummaryStatement: Net Asset Value (NAV) summaries showing asset values, unit prices, net asset values WITHOUT tax information. Look for "Net Asset Summary", "NAV Summary", "NAV statement", "NAV Statement", "Net Asset Value", "Unit Price", "Asset Summary", "Fund Performance", "Shareholder Value", "Shareholder Activity", "Opening Balance", "Closing Balance". CRITICAL: Documents with "NAV statement" or "Fund Performance" are ALWAYS NetAssetSummaryStatement or HoldingStatement, NEVER BankStatement. IMPORTANT: This is different from "NAV & Taxation Statement" which is a TaxStatement. If the document shows both NAV and tax information, it's a TaxStatement. If it only shows NAV/asset values without tax details, it's a NetAssetSummaryStatement
-- CallAndDistributionStatement: Call and Distribution Statements combining capital calls with distributions. Look for "Call and Distribution Statement", "Dist and Capital Call", "Distribution and Capital Call", "Capital Call", "Notional Capital Call", "Called Capital", "Uncalled Committed Capital" combined with distribution information
-- Other: Other financial documents
+SellContract (HIGH PRIORITY)
+- Keywords: "CONFIRMATION" + "SELL", "Buy/Sell: SELL", "We have sold", "We confirm your SALE", "Contract Note"
+- If you see "TRADE CONFIRMATION" AND "SELL", it is ALWAYS SellContract
 
-CRITICAL: When classifying documents (PRIORITY ORDER):
-1. **BuyContract has HIGHEST PRIORITY** - If you see "CONFIRMATION" (or "CONTRACT NOTE") AND "BUY" (or "We have bought" or "Has bought"), it is ALWAYS a BuyContract, regardless of other keywords like "FUND", "ETF", "Distribution", etc.
-   - BuyContract documents often contain investment names with "FUND" or "ETF" (e.g., "AORIS INT FUND", "ETF"), but these are the SECURITIES being bought, NOT distribution statements
-   - BuyContract documents may mention "Account No." but these refer to trading accounts, NOT bank accounts
-   - BuyContract requires clear purchase/transaction indicators: "CONFIRMATION" + "BUY", "We have bought", "Has bought", "Consideration", "Brokerage"
-   - CRITICAL: Even if the investment name contains "FUND" or "ETF", if the document says "CONFIRMATION" + "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement
-2. **CallAndDistributionStatement** - "Call and Distribution Statement" or "Dist and Capital Call" combined with distribution information
-3. **DistributionStatement** - "DISTRIBUTION STATEMENT" in the title, but ONLY if NOT a BuyContract (no "CONFIRMATION" + "BUY")
-   - Do NOT classify as DistributionStatement if you see "CONFIRMATION" + "BUY" - that's a BuyContract
-   - Distribution Statements are about fund distributions/payments, NOT purchases
-4. Other types follow normal rules
+DividendStatement
+- Keywords: "Dividend Statement", "Dividend Payment", "Record Date", "Payment Date"
 
-Additional rules:
-- Do NOT classify as BuyContract just because the word "BUY" appears in other contexts (e.g., "Buy-Sell Spread" in fund statements)
-- Do NOT classify as HoldingStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate BuyContract/SellContract
-- BankStatement requires "Bank Statement" in the title AND bank-specific indicators like "BSB", "Bank Account", "Banking"
-- If you see "CONFIRMATION", "CONTRACT NOTE", "Brokerage", or "Consideration", it is NEVER a BankStatement
-- If you see "NAV statement", "NAV Statement", "Fund Performance", "Shareholder Value", or "Shareholder Activity", it is ALWAYS NetAssetSummaryStatement or HoldingStatement, NEVER BankStatement
-- "Net Asset Summary" or "NAV Summary" WITHOUT tax information = NetAssetSummaryStatement
-- "NAV & Taxation Statement" or documents with both NAV and tax information = TaxStatement
+DistributionStatement
+- Keywords: "Distribution Statement/Advice", "Distribution Payment", "Net Distribution"
+- NOT a DistributionStatement if the document contains BUY CONFIRMATION keywords
+
+CapitalCallStatement
+- Keywords: "Capital Call", "Notice of Capital Call", "Amount Due"
+- ONLY if there is NO "Distribution" content
+
+CallAndDistributionStatement
+- Document includes BOTH Capital Call AND Distribution information
+
+HoldingStatement
+- Keywords: "CHESS", "HIN", "SRN", "Holdings", "Portfolio Summary", "Shareholding Statement"
+- NOT valid if trade confirmation keywords appear
+
+BankStatement
+- Keywords: "Bank Statement", account summary, BSB
+- NOT a bank statement if "confirmation", "contract note", "buy", "sell", "brokerage", "consideration" appear
+
+TaxStatement
+- Keywords: "Tax Statement", "AMIT", "AMMA", "Tax Summary", "NAV & Taxation Statement"
+
+NetAssetSummaryStatement
+- Keywords: "Net Asset Summary", "NAV Summary", "Fund Performance"
+- If NAV + tax info are both present → TaxStatement
+
+Other
+- Everything else
+
+------------------------------------------
+ISSUER EXTRACTION RULES
+------------------------------------------
+Issuer must be the FUND/PRODUCT/COMPANY from THIS document.
+
+For BuyContract/SellContract:
+- Extract the INVESTMENT/SECURITY name being bought/sold
+- Prioritise fields in THIS ORDER:
+  1. "COMPANY:" - HIGHEST PRIORITY (e.g., "COMPANY: CLEO DIAGNOSTICS LTD" → "CLEO DIAGNOSTICS LTD")
+  2. "Stock Description:" - HIGH PRIORITY for trade confirmations (e.g., "Stock Description: RUSSELL 2000 INDEX ISHARES" → "RUSSELL 2000 INDEX ISHARES")
+  3. "Security Description:" - PRIMARY field - Look for this in:
+     * Direct format: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
+     * Table format: After "WE HAVE BOUGHT/SOLD THE FOLLOWING SECURITIES FOR YOU", find the table row with "Security Description" column
+     * Table row example: "Quantity 39,260 Security Code DIFF Security Description PERPETUAL DIVERSIFIED INCOME ACTIVE ETF Price 10.1300"
+     * Extract the FULL name including "ETF", "FUND", "INDEX", "ISHARES" (e.g., "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF", "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF")
+  4. "Investment:", "Security:", "Code:" followed by security name
+- Remove unnecessary descriptors: "ORDINARY FULLY PAID", "FRN", "Callable", coupon details
+- BUT preserve ETF/index names: Keep "INDEX", "ISHARES", "ETF", "FUND" if present (e.g., "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" should remain complete)
+- DO NOT use broker names (CommSec, JBWere, Ord Minnett, Morgan Stanley, Equity & Super) or investor names
+- CRITICAL: Do NOT extract legal disclaimers. If extracted name is very long (>100 chars) or contains phrases like "In Australia", "Liability", "Members", "Unless Otherwise Stated", reject it and look for actual investment name
+- CRITICAL: Do NOT extract "Quantity" or other table column headers - extract the actual investment name
+
+For HoldingStatement/Share Summary/NetAssetSummaryStatement:
+- Extract the FUND name from the document TITLE (usually at the top of the document)
+- Look for patterns like: "FUND NAME Share Summary", "FUND NAME, Ltd. Share Summary", "FUND NAME NAV Statement"
+- Examples:
+  * "Highwest Global Offshore Fund, Ltd. Share Summary" → "Highwest Global Offshore Fund, Ltd."
+  * "ABC Investment Fund Share Summary" → "ABC Investment Fund"
+  * "XYZ Fund NAV Statement" → "XYZ Fund"
+- CRITICAL: Extract the ACTUAL FUND NAME, NOT the service provider name
+- DO NOT use service provider names like "Morgan Stanley Fund Services", "Computershare", "Link Market Services" - these are NOT the fund name
+- The fund name is usually the FIRST prominent name in the document title, before words like "Share Summary", "Statement", "NAV", etc.
+
+For other document types (DividendStatement, DistributionStatement, etc.):
+- Extract the fund/product/company name from document title or main content
+- Look for fund names in document headers or titles
+- DO NOT use service provider or registry names - use the actual fund/company name
+
+------------------------------------------
+DATE EXTRACTION RULES
+------------------------------------------
+Output must be YYYY-MM-DD.
+Document dates use AU format (DD/MM/YYYY).
+
+Priority:
+
+DividendStatement:
+  Payment Date → Record Date → Statement Date
+
+DistributionStatement:
+  Payment Date → Record Date → Distribution Date
+
+BuyContract/SellContract:
+  Confirmation Date → Transaction Date → Trade Date
+  DO NOT use "Settlement Date" or "ASX Settlement Date" - these are future dates
+
+All others:
+  Statement Date or main document date
+
+------------------------------------------
+ASX CODE RULES
+------------------------------------------
+Use the ASX code only if explicitly present (e.g. "Code: BXB").
+Otherwise return null.
+
+------------------------------------------
+ACCOUNT NUMBER RULES
+------------------------------------------
+Extract last 4 digits of account or investor number if present.
+Return null if not present.
+
+------------------------------------------
+RETURN FORMAT
+------------------------------------------
+Return ONLY the JSON object.
+
+Do NOT include:
+- markdown
+- backticks
+- commentary
+- explanation
+- reasoning
+- extra text before or after the JSON
 
 Document text:
 {text_sample}
@@ -155,7 +248,7 @@ JSON:"""
     return None
 
 
-def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 4000) -> Optional[Dict[str, Any]]:
+def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 4000, learning_examples: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     """
     Combined LLM call: Extract fields AND suggest filename in one request
     This reduces HTTP overhead and improves speed
@@ -167,78 +260,201 @@ def extract_and_suggest_filename_with_llm(text: str, max_chars: int = 4000) -> O
     # Truncate text to avoid token limits
     text_sample = text[:max_chars] if len(text) > max_chars else text
     
-    prompt = f"""Analyze this Australian financial document text and extract key information AND suggest a filename. Return ONLY a valid JSON object with these exact fields:
+    prompt = f"""You are analysing OCR text from an Australian financial document.
+
+Your job: 
+1. Classify the document.
+2. Extract key fields.
+3. Suggest a filename.
+
+Always follow the rules below EXACTLY.
+
+------------------------------------------
+TOP PRIORITY RULES (READ AND OBEY FIRST)
+------------------------------------------
+1. If the document contains BOTH "CONFIRMATION" and "BUY", it is ALWAYS a BuyContract. No exceptions.
+2. If the document contains BOTH "CONFIRMATION" and "SELL" (or "Buy/Sell: SELL"), it is ALWAYS a SellContract. No exceptions.
+3. NEVER use investor names, broker names, or service provider names (CommSec, JBWere, Ord Minnett, Morgan Stanley Fund Services, Computershare, Link Market Services, etc.) as issuer.
+4. For Share Summary/HoldingStatement documents: Extract the ACTUAL FUND NAME from the document title (e.g., "Highwest Global Offshore Fund, Ltd."), NOT the service provider name (e.g., "Morgan Stanley Fund Services").
+5. Only use information found IN THIS document. Ignore any previous documents.
+6. Output MUST be valid JSON. No explanation, no markdown, no backticks.
+
+------------------------------------------
+OUTPUT FORMAT (EXTRACTION + FILENAME MODE)
+------------------------------------------
+Return ONLY this JSON object:
+
 {{
-  "doc_type": "DividendStatement|DistributionStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|Other|null",
-  "issuer": "fund/product/company name (NOT investor name) or null",
-  "asx_code": "ASX code (e.g., BAOR, AAA) or null",
+  "doc_type": "DividendStatement|DistributionStatement|CapitalCallStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|Other|null",
+  "issuer": "fund/product/company name or null",
+  "asx_code": "ASX code or null",
   "date_iso": "YYYY-MM-DD or null",
   "account_last4": "last 4 digits or null",
-  "suggested_filename": "YYYY-MM-DD_[fund-product-slug]_document-type.pdf or null"
+  "suggested_filename": "YYYY-MM-DD_[issuer-slug]_[doc-type-tag].pdf or null"
 }}
 
-CRITICAL: Extract information ONLY from THIS document. Do NOT use information from previous documents.
+------------------------------------------
+DOCUMENT CLASSIFICATION RULES
+------------------------------------------
 
-Important:
-- "issuer" should be the FUND/PRODUCT/COMPANY name from THIS document (extract from document text)
-  * For BuyContract/SellContract: CRITICAL - Extract the INVESTMENT/SECURITY name being bought/sold. Look for fields like:
-    - "Security Description:", "Investment:", "Security:", "Code:", "Description:", "Name:"
-    - The main investment/security name in transaction details (e.g., "Insurance Australia Group Ltd", "Scentre Group Trust 1", "BRAMBLES LIMITED", "BGF EUPN SPEC SI")
-    - Extract the COMPANY/TRUST/FUND name, NOT the broker name (e.g., "JBWere", "CommSec") or investor name
-    - Remove technical details like "FRN", "Callable", "Matures" dates, coupon rates unless essential
-    - Use the main company/trust name (e.g., "Insurance Australia Group" not "Insurance Australia Group Ltd FRN 3MBBSW...")
-  * For other document types: Extract the fund/product/company name
-- Do NOT use investor/account holder names
-- Do NOT use broker names for BuyContract/SellContract
-- "asx_code" is the ASX stock code if available in THIS document (e.g., "BXB", "XRO", "REA")
-- For bank statements, "issuer" is the bank name
-- "date_iso" should be extracted from THIS document using these priorities:
-  * For DividendStatement: Use "Payment Date" first, then "Record Date", then "Statement Date"
-  * For DistributionStatement: Use "Payment Date" first, then "Record Date", then "Distribution Date"
-  * For BuyContract/SellContract: Use "Confirmation Date" first (e.g., "Confirmation date: 11/07/2025" → "2025-07-11"), then "Transaction Date", then "Trade Date", then "Settlement Date", then "As at Date"
-  * For other types: Use "Statement Date" or document date
-  * Format: YYYY-MM-DD (e.g., if you see "15/05/2024" or "15 May 2024", convert to "2024-05-15")
-  * IMPORTANT: Dates in DD/MM/YYYY format (Australian format) - day is first, month is second
-- "account_last4" should be the investor number or account last 4 digits from THIS document
-- "suggested_filename": Generate filename in format YYYY-MM-DD_[fund-product-slug]_document-type.pdf
-  * Remove company suffixes: "Pty Ltd", "Limited", "Ltd" (and all variations)
-  * For BuyContract/SellContract: Use investment/security name, NOT broker name
-  * Do NOT include account numbers or identifiers
-  * Document type: "dividend-statement", "distribution-statement", "buy-contract", "sell-contract", etc.
+BuyContract (HIGHEST PRIORITY)
+- Keywords: "CONFIRMATION" + "BUY", "We have bought", "Contract Note", "Brokerage", "Consideration"
+- Securities may include "FUND" or "ETF" — still a BuyContract if confirmation + buy exists
+- If you see "CONFIRMATION" AND "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement
 
-Document types:
-- DividendStatement: Dividend payment statements
-- DistributionStatement: Distribution advice/payment statements (ETFs, managed funds). Look for "DISTRIBUTION STATEMENT", "Distribution Statement", "Distribution Advice", "Distribution Payment", "Distribution Rate", "Holding Balance", "Gross Distribution", "Net Distribution". CRITICAL: Do NOT confuse with BuyContract - Distribution Statements are about fund distributions/payments, NOT purchases. If you see "CONFIRMATION" + "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement, even if the investment name contains "FUND" or "ETF"
-- PeriodicStatement: Periodic statements showing transactions, balances, fees (managed funds)
-- BankStatement: Bank account statements from banks showing account balances, transactions, deposits, withdrawals. Look for "Bank Statement" in the title. CRITICAL: Do NOT classify as BankStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate trade confirmations, NOT bank statements
-- BuyContract: Buy confirmations, trade confirmations for purchases, contract notes showing BUY transactions. Look for "CONFIRMATION" (most common), "BUY CONFIRMATION", "CONTRACT NOTE", "We have bought", "Transaction Type: BUY", "Consideration", "Brokerage", "Trade Date", "Settlement Date", "Confirmation Date". CRITICAL: Documents with "CONFIRMATION" in the title AND "BUY" are ALWAYS BuyContract, NOT BankStatement. Even if they mention "Account" or "Account Number", if it's a confirmation document with BUY, it's a BuyContract
-- SellContract: Sell confirmations, trade confirmations for sales, contract notes showing SELL transactions. Look for "SELL CONFIRMATION", "Sell Confirmation", "Trade Confirmation", "We have sold", "Transaction Type: SELL"
-- HoldingStatement: Shareholding statements showing holdings/portfolio (CHESS, HIN, SRN, Portfolio Summary, Holdings Summary). Look for "CHESS", "HIN", "SRN", "Holdings", "Portfolio", "Shareholding Statement", "NAV statement", "Fund Performance", "Shareholder Value", "Shareholder Activity". CRITICAL: Do NOT classify as HoldingStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate trade confirmations (BuyContract/SellContract), NOT holding statements
-- TaxStatement: Tax-related statements. Look for "Tax Statement", "Tax Summary", "AMMA", "AMIT", "Taxation Statement", "NAV & Taxation Statement", "Tax Year", "Assessable Income", "Tax Return", "Tax Withheld", "Tax Payable". IMPORTANT: "NAV & Taxation Statement" is a TaxStatement, NOT a HoldingStatement or NetAssetSummaryStatement
-- NetAssetSummaryStatement: Net Asset Value (NAV) summaries showing asset values, unit prices, net asset values WITHOUT tax information. Look for "Net Asset Summary", "NAV Summary", "NAV statement", "NAV Statement", "Net Asset Value", "Unit Price", "Asset Summary", "Fund Performance", "Shareholder Value", "Shareholder Activity", "Opening Balance", "Closing Balance". CRITICAL: Documents with "NAV statement" or "Fund Performance" are ALWAYS NetAssetSummaryStatement or HoldingStatement, NEVER BankStatement. IMPORTANT: This is different from "NAV & Taxation Statement" which is a TaxStatement. If the document shows both NAV and tax information, it's a TaxStatement. If it only shows NAV/asset values without tax details, it's a NetAssetSummaryStatement
-- CallAndDistributionStatement: Call and Distribution Statements combining capital calls with distributions. Look for "Call and Distribution Statement", "Dist and Capital Call", "Distribution and Capital Call", "Capital Call", "Notional Capital Call", "Called Capital", "Uncalled Committed Capital" combined with distribution information
-- Other: Other financial documents
+SellContract (HIGH PRIORITY)
+- Keywords: "CONFIRMATION" + "SELL", "Buy/Sell: SELL", "We have sold", "We confirm your SALE", "Contract Note"
+- If you see "TRADE CONFIRMATION" AND "SELL", it is ALWAYS SellContract
 
-CRITICAL: When classifying documents (PRIORITY ORDER):
-1. **BuyContract has HIGHEST PRIORITY** - If you see "CONFIRMATION" (or "CONTRACT NOTE") AND "BUY" (or "We have bought" or "Has bought"), it is ALWAYS a BuyContract, regardless of other keywords like "FUND", "ETF", "Distribution", etc.
-   - BuyContract documents often contain investment names with "FUND" or "ETF" (e.g., "AORIS INT FUND", "ETF"), but these are the SECURITIES being bought, NOT distribution statements
-   - BuyContract documents may mention "Account No." but these refer to trading accounts, NOT bank accounts
-   - BuyContract requires clear purchase/transaction indicators: "CONFIRMATION" + "BUY", "We have bought", "Has bought", "Consideration", "Brokerage"
-   - CRITICAL: Even if the investment name contains "FUND" or "ETF", if the document says "CONFIRMATION" + "BUY", it is ALWAYS BuyContract, NEVER DistributionStatement
-2. **CallAndDistributionStatement** - "Call and Distribution Statement" or "Dist and Capital Call" combined with distribution information
-3. **DistributionStatement** - "DISTRIBUTION STATEMENT" in the title, but ONLY if NOT a BuyContract (no "CONFIRMATION" + "BUY")
-   - Do NOT classify as DistributionStatement if you see "CONFIRMATION" + "BUY" - that's a BuyContract
-   - Distribution Statements are about fund distributions/payments, NOT purchases
-4. Other types follow normal rules
+DividendStatement
+- Keywords: "Dividend Statement", "Dividend Payment", "Record Date", "Payment Date"
 
-Additional rules:
-- Do NOT classify as BuyContract just because the word "BUY" appears in other contexts (e.g., "Buy-Sell Spread" in fund statements)
-- Do NOT classify as HoldingStatement if you see "CONFIRMATION", "CONTRACT NOTE", "BUY", "SELL", "Trade", "Brokerage", or "Consideration" - these indicate BuyContract/SellContract
-- BankStatement requires "Bank Statement" in the title AND bank-specific indicators like "BSB", "Bank Account", "Banking"
-- If you see "CONFIRMATION", "CONTRACT NOTE", "Brokerage", or "Consideration", it is NEVER a BankStatement
-- If you see "NAV statement", "NAV Statement", "Fund Performance", "Shareholder Value", or "Shareholder Activity", it is ALWAYS NetAssetSummaryStatement or HoldingStatement, NEVER BankStatement
-- "Net Asset Summary" or "NAV Summary" WITHOUT tax information = NetAssetSummaryStatement
-- "NAV & Taxation Statement" or documents with both NAV and tax information = TaxStatement
+DistributionStatement
+- Keywords: "Distribution Statement/Advice", "Distribution Payment", "Net Distribution"
+- NOT a DistributionStatement if the document contains BUY CONFIRMATION keywords
+
+CapitalCallStatement
+- Keywords: "Capital Call", "Notice of Capital Call", "Amount Due"
+- ONLY if there is NO "Distribution" content
+
+CallAndDistributionStatement
+- Document includes BOTH Capital Call AND Distribution information
+
+HoldingStatement
+- Keywords: "CHESS", "HIN", "SRN", "Holdings", "Portfolio Summary", "Shareholding Statement"
+- NOT valid if trade confirmation keywords appear
+
+BankStatement
+- Keywords: "Bank Statement", account summary, BSB
+- NOT a bank statement if "confirmation", "contract note", "buy", "sell", "brokerage", "consideration" appear
+
+TaxStatement
+- Keywords: "Tax Statement", "AMIT", "AMMA", "Tax Summary", "NAV & Taxation Statement"
+
+NetAssetSummaryStatement
+- Keywords: "Net Asset Summary", "NAV Summary", "Fund Performance"
+- If NAV + tax info are both present → TaxStatement
+
+Other
+- Everything else
+
+------------------------------------------
+ISSUER EXTRACTION RULES
+------------------------------------------
+Issuer must be the FUND/PRODUCT/COMPANY from THIS document.
+
+For BuyContract/SellContract:
+- Extract the INVESTMENT/SECURITY name being bought/sold
+- Prioritise fields in THIS ORDER:
+  1. "COMPANY:" - HIGHEST PRIORITY (e.g., "COMPANY: CLEO DIAGNOSTICS LTD" → "CLEO DIAGNOSTICS LTD")
+  2. "Stock Description:" - HIGH PRIORITY for trade confirmations (e.g., "Stock Description: RUSSELL 2000 INDEX ISHARES" → "RUSSELL 2000 INDEX ISHARES")
+  3. "Security Description:" - PRIMARY field - Look for this in:
+     * Direct format: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
+     * Table format: After "WE HAVE BOUGHT/SOLD THE FOLLOWING SECURITIES FOR YOU", find the table row with "Security Description" column
+     * Table row example: "Quantity 39,260 Security Code DIFF Security Description PERPETUAL DIVERSIFIED INCOME ACTIVE ETF Price 10.1300"
+     * Extract the FULL name including "ETF", "FUND", "INDEX", "ISHARES" (e.g., "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF", "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF")
+  4. "Investment:", "Security:", "Code:" followed by security name
+- Remove unnecessary descriptors: "ORDINARY FULLY PAID", "FRN", "Callable", coupon details
+- BUT preserve ETF/index names: Keep "INDEX", "ISHARES", "ETF", "FUND" if present (e.g., "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" should remain complete)
+- DO NOT use broker names (CommSec, JBWere, Ord Minnett, Morgan Stanley, Equity & Super) or investor names
+- CRITICAL: Do NOT extract legal disclaimers. If extracted name is very long (>100 chars) or contains phrases like "In Australia", "Liability", "Members", "Unless Otherwise Stated", reject it and look for actual investment name
+- CRITICAL: Do NOT extract "Quantity" or other table column headers - extract the actual investment name
+
+For HoldingStatement/Share Summary/NetAssetSummaryStatement:
+- Extract the FUND name from the document TITLE (usually at the top of the document)
+- Look for patterns like: "FUND NAME Share Summary", "FUND NAME, Ltd. Share Summary", "FUND NAME NAV Statement"
+- Examples:
+  * "Highwest Global Offshore Fund, Ltd. Share Summary" → "Highwest Global Offshore Fund, Ltd."
+  * "ABC Investment Fund Share Summary" → "ABC Investment Fund"
+  * "XYZ Fund NAV Statement" → "XYZ Fund"
+- CRITICAL: Extract the ACTUAL FUND NAME, NOT the service provider name
+- DO NOT use service provider names like "Morgan Stanley Fund Services", "Computershare", "Link Market Services" - these are NOT the fund name
+- The fund name is usually the FIRST prominent name in the document title, before words like "Share Summary", "Statement", "NAV", etc.
+
+For other document types (DividendStatement, DistributionStatement, etc.):
+- Extract the fund/product/company name from document title or main content
+- Look for fund names in document headers or titles
+- DO NOT use service provider or registry names - use the actual fund/company name
+
+------------------------------------------
+DATE EXTRACTION RULES
+------------------------------------------
+Output must be YYYY-MM-DD.
+Document dates use AU format (DD/MM/YYYY).
+
+Priority:
+
+DividendStatement:
+  Payment Date → Record Date → Statement Date
+
+DistributionStatement:
+  Payment Date → Record Date → Distribution Date
+
+BuyContract/SellContract:
+  Confirmation Date → Transaction Date → Trade Date
+  DO NOT use "Settlement Date" or "ASX Settlement Date" - these are future dates
+
+All others:
+  Statement Date or main document date
+
+------------------------------------------
+ASX CODE RULES
+------------------------------------------
+Use the ASX code only if explicitly present (e.g. "Code: BXB").
+Otherwise return null.
+
+------------------------------------------
+ACCOUNT NUMBER RULES
+------------------------------------------
+Extract last 4 digits of account or investor number if present.
+Return null if not present.
+
+------------------------------------------
+USER LEARNING EXAMPLES (FOLLOW THESE PATTERNS)
+------------------------------------------
+{f"Below are examples of how similar documents were named by the user. Follow these patterns when generating the filename:" if learning_examples else ""}
+{chr(10).join([f"Example {i+1}: Document type '{ex.get('fields', {}).get('doc_type', 'unknown')}', Issuer '{ex.get('fields', {}).get('issuer', 'unknown')}' → User edited filename: {ex.get('edited_filename', '')}" for i, ex in enumerate(learning_examples[:3])]) if learning_examples else ""}
+{f"IMPORTANT: When you see similar documents, use the same naming pattern as shown in the examples above." if learning_examples else ""}
+
+------------------------------------------
+FILENAME RULES
+------------------------------------------
+Filename format: YYYY-MM-DD_{{issuer-slug}}_{{doc-type-tag}}.pdf
+
+Issuer slug rules:
+- lowercase
+- spaces → hyphens
+- remove punctuation
+- remove suffixes (Pty Ltd, Pty. Ltd., Limited, Ltd)
+- for Buy/Sell: use the SECURITY name
+- do NOT include account numbers or investor names
+- do NOT use broker names
+
+doc-type-tag mapping:
+DividendStatement → dividend-statement
+DistributionStatement → dist-statement
+CapitalCallStatement → cap-call
+CallAndDistributionStatement → dist-and-cap-call
+PeriodicStatement → periodic-statement
+BankStatement → bank-statement
+BuyContract → buy-contract
+SellContract → sell-contract
+HoldingStatement → holding-statement
+TaxStatement → tax-statement
+NetAssetSummaryStatement → net-asset-summary-statement
+
+------------------------------------------
+RETURN FORMAT
+------------------------------------------
+Return ONLY the JSON object.
+
+Do NOT include:
+- markdown
+- backticks
+- commentary
+- explanation
+- reasoning
+- extra text before or after the JSON
 
 Document text:
 {text_sample}
@@ -292,10 +508,10 @@ JSON:"""
     return None
 
 
-def suggest_filename_with_llm(fields: Dict[str, Optional[str]], text_sample: str = "") -> Optional[str]:
+def suggest_filename_with_llm(fields: Dict[str, Optional[str]], text_sample: str = "", learning_examples: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
     """
-    Use LLM to suggest a better filename based on extracted fields and document context
-    LLM has full flexibility to determine the best filename format based on document content
+    Use LLM to suggest a better filename based on document context
+    LLM extracts everything directly from document text - ignores potentially incorrect fields
     """
     if not USE_LLM or not check_ollama_available():
         return None
@@ -303,63 +519,145 @@ def suggest_filename_with_llm(fields: Dict[str, Optional[str]], text_sample: str
     # Use more context from text for better filename generation (increase to 4000 chars to capture fund names)
     context_sample = text_sample[:4000] if text_sample else ""
     
-    prompt = f"""You are helping to rename a financial document PDF file. You MUST analyze the document context below to extract the ACTUAL fund/product name from THIS specific document.
+    prompt = f"""You are helping to rename a financial document PDF file.
 
-Extracted Fields (may be incomplete - verify against document context):
-- Document Type: {fields.get('doc_type', 'Unknown')}
-- Fund/Product/Issuer: {fields.get('issuer', 'Unknown')}
-- ASX Code: {fields.get('asx_code', 'Unknown')}
-- Date: {fields.get('date_iso', 'Unknown')}
-- Account (last 4): {fields.get('account_last4', 'Unknown')}
+IMPORTANT: Extract ALL information directly from the document text below. Do NOT rely on any pre-extracted fields - they may be incorrect.
 
-FULL Document Context (read carefully):
+FULL Document Context (read carefully and extract from here):
 {context_sample}
 
-CRITICAL INSTRUCTIONS:
-1. **READ THE DOCUMENT CONTEXT ABOVE CAREFULLY** - The fund/product/investment name is IN THE TEXT
-2. **Extract the ACTUAL fund/product/investment name from the document context** - Look for:
-   - For BuyContract/SellContract: Extract the INVESTMENT/SECURITY name being bought/sold. Look for fields like "Investment:", "Security Description:", "Code:", or the main investment name in the transaction details. Examples: "Insurance Australia Group Ltd FRN 3MBBSW...", "Scentre Group Trust 1 FRN...", "BRAMBLES LIMITED". Do NOT use broker names (e.g., "JBWere") or investor names
-   - For other document types: Fund names after "Fund:", "Product:", "ETF:", or in document titles
-   - The name is usually in the main transaction/investment section
-   - Extract a MEANINGFUL name - for complex investments, use the main company/trust name (e.g., "Insurance Australia Group" not the full FRN description)
-   - Remove technical details like "FRN", "Callable", "Matures" dates, coupon rates unless they are essential to identify the investment
-3. **ALWAYS include the date** - Extract from document context using these priorities:
-   - For DividendStatement: Look for "Payment Date" first (e.g., "Payment Date: 15/05/2024" → "2024-05-15"), then "Record Date", then "Statement Date"
-   - For DistributionStatement: Look for "Payment Date" first, then "Record Date", then "Distribution Date"
-   - For BuyContract/SellContract: Look for "Confirmation Date" first (e.g., "Confirmation date: 11/07/2025" → "2025-07-11"), then "Transaction Date", then "Trade Date", then "Settlement Date"
-   - For other types: Look for "Statement Date" or document date
-   - Format: YYYY-MM-DD
-   - CRITICAL: Australian dates are DD/MM/YYYY format - day comes first, month second (e.g., "15/05/2024" = May 15, 2024 = "2024-05-15")
-   - If date is Unknown, use "YYYY-MM-DD" as placeholder
-4. **Format**: YYYY-MM-DD_[fund-product-slug]_document-type.pdf
-   - Do NOT include account numbers or identifiers in the filename
-5. **Convert fund name to slug**: lowercase, replace spaces with hyphens, remove special characters
-   - Example: "ABC Fund Class X" → "abc-fund-class-x"
-   - Remove parentheses and their contents if they are just qualifiers, but keep important class/type information
-   - Remove company suffixes: "Pty Ltd", "Pty. Ltd.", "PTY LTD", "Limited", "Ltd", "Ltd." (and all variations)
-   - Example: "ABC Fund Pty Ltd" → "abc-fund", "XYZ Company Pty. Ltd." → "xyz-company"
-6. **Document type** (lowercase, hyphenated):
-   - "dividend-statement", "distribution-statement", "periodic-statement", "bank-statement", "buy-contract", "sell-contract", "holding-statement", "tax-statement"
+------------------------------------------
+TOP PRIORITY RULES
+------------------------------------------
+1. Extract the ACTUAL fund/product/investment name from THIS document's context
+2. For BuyContract/SellContract: Use INVESTMENT/SECURITY name, NOT broker name
+3. Return ONLY the filename. No explanation, no markdown, no backticks.
 
-IMPORTANT: 
-- Extract the SPECIFIC fund/product/investment name from THIS document's context - each document is different
-- For BuyContract/SellContract: Use the investment/security name (e.g., "Insurance Australia Group", "Scentre Group Trust 1", "BRAMBLES LIMITED"), NOT the broker name
-- Do NOT use generic company names - use the FULL fund/product/investment name
-- Do NOT use investor/account holder names
-- Do NOT use broker names (e.g., "JBWere", "CommSec") for BuyContract/SellContract
-- Do NOT use ASX codes unless fund/investment name is completely unavailable
-- Read the document context carefully to find the actual fund/product/investment name
-- If the extracted fields are incomplete or incorrect, use your best judgment from the document context to generate a meaningful filename
+------------------------------------------
+OUTPUT FORMAT (FILENAME MODE)
+------------------------------------------
+Return ONLY the filename in this format:
 
-CRITICAL: Return ONLY the filename. Do NOT include any explanation, reasoning, or additional text. Just the filename.
+YYYY-MM-DD_{{issuer-slug}}_{{doc-type-tag}}.pdf
 
-Example of correct response:
-2025-07-25_abc-fund-class-x_distribution-statement.pdf
+Where:
+- issuer-slug = lowercase, hyphens instead of spaces, remove special chars
+- remove "Pty Ltd", "Ltd", "Limited", "Pty. Ltd.", etc.
+- do NOT include investor/broker names
+- for BuyContract/SellContract: use INVESTMENT/SECURITY name (not broker)
 
-Example of INCORRECT response (do NOT do this):
-Based on the document context, I extracted the following information: * Fund/Product Name: ABC Fund Class X * Date: 2025-07-25 Using the formatting rules, the filename should be: 2025-07-25_abc-fund-class-x_distribution-statement.pdf
+doc-type-tag mapping:
+DividendStatement → dividend-statement
+DistributionStatement → dist-statement
+CapitalCallStatement → cap-call
+CallAndDistributionStatement → dist-and-cap-call
+PeriodicStatement → periodic-statement
+BankStatement → bank-statement
+BuyContract → buy-contract
+SellContract → sell-contract
+HoldingStatement → holding-statement
+TaxStatement → tax-statement
+NetAssetSummaryStatement → net-asset-summary-statement
 
-Return ONLY the filename, nothing else."""
+------------------------------------------
+INVESTMENT NAME EXTRACTION (BuyContract/SellContract)
+------------------------------------------
+CRITICAL: Extract the INVESTMENT/SECURITY name being bought/sold from the document text.
+
+Look for fields in THIS PRIORITY ORDER:
+1. "COMPANY:" - HIGHEST PRIORITY (e.g., "COMPANY: CLEO DIAGNOSTICS LTD" → "cleo-diagnostics-ltd")
+2. "Stock Description:" - HIGH PRIORITY (e.g., "Stock Description: RUSSELL 2000 INDEX ISHARES" → "russell-2000-index-ishares")
+3. "Security Description:" - PRIMARY field - Look in tables after "WE HAVE BOUGHT/SOLD THE FOLLOWING SECURITIES FOR YOU"
+   * Example: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "perpetual-diversified-income-active-etf"
+   * Example: "Security Description: VANECK AUSTRALIAN SUBORDINATED DEBT ETF" → "van-eck-australian-subordinated-debt-etf"
+   * Extract the FULL name including "ETF", "FUND", "INDEX", "ISHARES"
+4. "Investment:", "Code:", or main investment name in transaction details
+
+Examples of CORRECT extraction:
+- "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "perpetual-diversified-income-active-etf"
+- "VANECK AUSTRALIAN SUBORDINATED DEBT ETF" → "van-eck-australian-subordinated-debt-etf"
+- "CLEO DIAGNOSTICS LTD" → "cleo-diagnostics-ltd"
+- "RUSSELL 2000 INDEX ISHARES" → "russell-2000-index-ishares"
+- "BRAMBLES LIMITED" → "brambles-limited"
+
+CRITICAL - DO NOT use (these are WRONG):
+- Broker names: "Equity & Super", "EquitySuper", "CommSec", "JBWere", "Ord Minnett", "Morgan Stanley"
+- Investor names: "GENLIM PTY LTD", "D&M- SIMON CUNNINGTON", "DmSimonCunnington", "Simon Cunnington"
+- Document labels: "BUY CONFIRMATION", "SELL CONFIRMATION", "TAX INVOICE", "BuyConfirmation", "SellConfirmation", "TaxInvoice"
+- Document instructions: "Retain for taxation purposes", "RetainForTaxationPurposes"
+- Table column headers: "Quantity", "Currency", "Price", "Consideration", "Brokerage"
+- Transaction details: "Account No", "Confirmation No", "Trade Date", "Settlement Date", "Market", "Order Status", "HIN", "Adviser Name"
+- Legal disclaimers: Any text >100 chars or containing "In Australia", "Liability", etc.
+- ANY text that is NOT the actual investment/security name from the "Security Description" field
+
+If you see text like "DmSimonCunningtonBuyConfirmationTaxInvoiceRetainForTaxationPurposesEquitySuper", 
+this is WRONG - it's a mix of investor name, document labels, and broker name. 
+You MUST extract ONLY the investment name from "Security Description" field instead.
+
+------------------------------------------
+FUND NAME EXTRACTION (Other Document Types)
+------------------------------------------
+For CapitalCallStatement/CallAndDistributionStatement/DistributionStatement:
+- Extract the FUND/PRODUCT name from document title FIRST
+- Look for patterns like "FUND NAME - CAPITAL CALL NOTICE" or "FUND NAME - DISTRIBUTION STATEMENT"
+- Extract the FULL fund name including "Fund", "Ventures", "Partnership", etc.
+- Do NOT use registry service names (e.g., "OIF Registry Services") - use the actual fund name
+
+For HoldingStatement/Share Summary/NetAssetSummaryStatement:
+- Extract the FUND name from the document TITLE (usually at the top of the document)
+- Look for patterns like: "FUND NAME Share Summary", "FUND NAME, Ltd. Share Summary", "FUND NAME NAV Statement"
+- Examples:
+  * "Highwest Global Offshore Fund, Ltd. Share Summary" → "highwest-global-offshore-fund-ltd"
+  * "ABC Investment Fund Share Summary" → "abc-investment-fund"
+  * "XYZ Fund NAV Statement" → "xyz-fund"
+- CRITICAL: Extract the ACTUAL FUND NAME, NOT the service provider name
+- DO NOT use service provider names like "Morgan Stanley Fund Services", "Computershare", "Link Market Services" - these are NOT the fund name
+- The fund name is usually the FIRST prominent name in the document title, before words like "Share Summary", "Statement", "NAV", etc.
+- Remove suffixes like "Ltd.", "Limited", "Inc." when creating the slug, but keep the main fund name
+
+For other document types:
+- Fund names after "Fund:", "Product:", "ETF:", or in document titles
+------------------------------------------
+DATE EXTRACTION
+------------------------------------------
+Extract from document context using these priorities:
+
+BuyContract/SellContract:
+  Confirmation Date → Transaction Date → Trade Date
+  DO NOT use "Settlement Date" or "ASX Settlement Date"
+
+DividendStatement:
+  Payment Date → Record Date → Statement Date
+
+DistributionStatement:
+  Payment Date → Record Date → Distribution Date
+
+All others:
+  Statement Date or document date
+
+Format: YYYY-MM-DD (Australian dates are DD/MM/YYYY - day first, month second)
+
+------------------------------------------
+USER LEARNING EXAMPLES (FOLLOW THESE PATTERNS)
+------------------------------------------
+{f"Below are examples of how similar documents were named by the user. Follow these patterns when generating the filename:" if learning_examples else ""}
+{chr(10).join([f"Example {i+1}: Document type '{ex.get('fields', {}).get('doc_type', 'unknown')}', Issuer '{ex.get('fields', {}).get('issuer', 'unknown')}' → User edited filename: {ex.get('edited_filename', '')}" for i, ex in enumerate(learning_examples[:3])]) if learning_examples else ""}
+{f"IMPORTANT: When you see similar documents, use the same naming pattern as shown in the examples above." if learning_examples else ""}
+
+------------------------------------------
+RETURN FORMAT
+------------------------------------------
+Return ONLY the filename.
+
+Do NOT include:
+- markdown
+- backticks
+- commentary
+- explanation
+- reasoning
+- extra text before or after the filename
+
+Filename:"""
 
     try:
         response = httpx.post(
