@@ -413,7 +413,7 @@ async def ocr_extract(
                         "issuer": combined_result.get("issuer"),
                         "date_iso": combined_result.get("date_iso")
                     })
-                suggested_filename = combined_result.get("suggested_filename")
+                    suggested_filename = combined_result.get("suggested_filename")
         
         # Fallback: Use separate LLM calls if combined call not available or failed
         if not suggested_filename and LLM_AVAILABLE:
