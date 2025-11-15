@@ -22,7 +22,8 @@ try:
         extract_with_llm,
         suggest_filename_with_llm,
         extract_and_suggest_filename_with_llm,
-        check_ollama_available
+        check_llm_available,
+        check_ollama_available  # For backward compatibility
     )
     LLM_AVAILABLE = True
 except ImportError:
@@ -30,6 +31,7 @@ except ImportError:
     extract_with_llm = None
     suggest_filename_with_llm = None
     extract_and_suggest_filename_with_llm = None
+    check_llm_available = lambda: False
     check_ollama_available = lambda: False
 
 app = FastAPI(title="PDFsaver OCR Worker", version="2.0.0")
@@ -124,10 +126,89 @@ def extract_text_from_pdf(pdf_path: str, max_pages: int = 2) -> str:
     return text_content
 
 
+def get_month_num(date_iso: str) -> str:
+    """
+    Get the Num based on the month of the date
+    Mapping: July(07)->01, Aug(08)->02, Sep(09)->03, Oct(10)->04, Nov(11)->05, Dec(12)->06,
+             Jan(01)->07, Feb(02)->08, Mar(03)->09, Apr(04)->10, May(05)->11, Jun(06)->12
+    """
+    if not date_iso or date_iso == "YYYY-MM-DD":
+        return "00"  # Default if no date
+    
+    # Extract month from YYYY-MM-DD or YYYYMMDD format
+    if "-" in date_iso:
+        # YYYY-MM-DD format
+        parts = date_iso.split("-")
+        if len(parts) >= 2:
+            month = int(parts[1])
+        else:
+            return "00"
+    else:
+        # YYYYMMDD format
+        if len(date_iso) >= 6:
+            month = int(date_iso[4:6])
+        else:
+            return "00"
+    
+    # Month to Num mapping
+    month_to_num = {
+        7: "01",   # July
+        8: "02",   # Aug
+        9: "03",   # Sep
+        10: "04",  # Oct
+        11: "05",  # Nov
+        12: "06",  # Dec
+        1: "07",   # Jan
+        2: "08",   # Feb
+        3: "09",   # Mar
+        4: "10",   # Apr
+        5: "11",   # May
+        6: "12"    # Jun
+    }
+    
+    return month_to_num.get(month, "00")
+
+
+def add_num_prefix(filename: str, date_iso: Optional[str]) -> str:
+    """
+    Add Num prefix to filename based on the month of the date
+    Format: Num YYYYMMDD - [doc-type-tag] - [issuer].pdf
+    """
+    if not filename:
+        return filename
+    
+    # Try to extract date from date_iso first
+    date_to_use = date_iso
+    
+    # If date_iso is not available or invalid, try to extract from filename
+    if not date_to_use or date_to_use == "YYYY-MM-DD":
+        # Try to extract YYYYMMDD from filename (format: YYYYMMDD - ... or Num YYYYMMDD - ...)
+        import re
+        # Look for 8 consecutive digits (YYYYMMDD)
+        date_match = re.search(r'(\d{8})', filename)
+        if date_match:
+            date_str = date_match.group(1)
+            # Convert YYYYMMDD to YYYY-MM-DD format for get_month_num
+            date_to_use = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    
+    # Extract Num based on date
+    num = get_month_num(date_to_use or "")
+    
+    # If filename already starts with a number (Num), replace it
+    # Otherwise, add Num at the beginning
+    parts = filename.split(" ", 1)
+    if parts[0].isdigit() and len(parts[0]) == 2:
+        # Already has Num prefix, replace it
+        return f"{num} {parts[1]}" if len(parts) > 1 else f"{num} {filename}"
+    else:
+        # Add Num prefix
+        return f"{num} {filename}"
+
+
 def build_fallback_filename(fields: Dict[str, Optional[str]]) -> str:
     """
     Build a simple fallback filename if LLM is not available
-    Format: YYYYMMDD [issuer] [doc-type].pdf
+    Format: YYYYMMDD - [doc-type] - [issuer].pdf
     """
     date_iso = fields.get("date_iso") or "YYYY-MM-DD"
     # Convert YYYY-MM-DD to YYYYMMDD
@@ -155,7 +236,9 @@ def build_fallback_filename(fields: Dict[str, Optional[str]]) -> str:
     }
     doc_type_tag = doc_type_map.get(doc_type, doc_type.replace("_", " ").title())
     
-    return f"{date} - {issuer} - {doc_type_tag}.pdf"
+    filename = f"{date} - {doc_type_tag} - {issuer}.pdf"
+    # Add Num prefix
+    return add_num_prefix(filename, date_iso)
 
 
 @app.get("/healthz")
@@ -163,9 +246,18 @@ async def health_check():
     """Health check endpoint"""
     status = {"status": "ok"}
     if LLM_AVAILABLE:
-        status["llm_available"] = check_ollama_available()
+        status["llm_available"] = check_llm_available()
         if status["llm_available"]:
-            status["llm_model"] = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+            llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+            if llm_provider == "deepseek":
+                status["llm_provider"] = "deepseek"
+                status["llm_model"] = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+            elif llm_provider == "openai":
+                status["llm_provider"] = "openai"
+                status["llm_model"] = os.getenv("OPENAI_MODEL", "gpt-5-nano")
+            else:
+                status["llm_provider"] = "ollama"
+                status["llm_model"] = os.getenv("OLLAMA_MODEL", "llama3")
     return status
 
 
@@ -178,18 +270,19 @@ async def ocr_extract(
     Process PDF file with OCR if needed
     Uses LLM for document classification and filename generation
     """
-    # Verify token
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    
-    try:
-        scheme, token = authorization.split()
-        if scheme.lower() != "bearer":
-            raise HTTPException(status_code=401, detail="Invalid authorization scheme")
-        if token != OCR_TOKEN:
-            raise HTTPException(status_code=403, detail="Invalid token")
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    # Verify token (only if OCR_TOKEN is set and not default)
+    if OCR_TOKEN and OCR_TOKEN != "change-me":
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Missing Authorization header")
+        
+        try:
+            scheme, token = authorization.split()
+            if scheme.lower() != "bearer":
+                raise HTTPException(status_code=401, detail="Invalid authorization scheme")
+            if token != OCR_TOKEN:
+                raise HTTPException(status_code=403, detail="Invalid token")
+        except ValueError:
+            raise HTTPException(status_code=401, detail="Invalid authorization header")
     
     # Check file extension
     if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -235,48 +328,59 @@ async def ocr_extract(
         if file_hash in _file_cache:
             cached_result = _file_cache[file_hash]
             print(f"Cache hit for {file.filename}")
+            # Add Num prefix to cached filename
+            cached_filename = add_num_prefix(
+                cached_result["suggested_filename"],
+                cached_result["fields"].get("date_iso")
+            )
             return OCRResponse(
                 has_text=has_text,
-                    ocred=ocred,
+                ocred=ocred,
                 pages_used=2,
-                    fields=cached_result["fields"],
-                    suggested_filename=cached_result["suggested_filename"]
-                )
+                fields=cached_result["fields"],
+                suggested_filename=cached_filename
+            )
         
         # Initialize fields
         fields = {
             "doc_type": None,
             "issuer": None,
-            "asx_code": None,
-            "date_iso": None,
-            "account_last4": None
+            "date_iso": None
         }
         suggested_filename = None
         
         # Use LLM for extraction and filename generation
         if LLM_AVAILABLE and extract_and_suggest_filename_with_llm:
-            # Try combined LLM call first (faster - single HTTP request)
-            combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=4000)
-            if combined_result:
-                fields.update({
-                    "doc_type": combined_result.get("doc_type"),
-                    "issuer": combined_result.get("issuer"),
-                    "asx_code": combined_result.get("asx_code"),
-                    "date_iso": combined_result.get("date_iso"),
-                    "account_last4": combined_result.get("account_last4")
-                })
-                suggested_filename = combined_result.get("suggested_filename")
-                print(f"LLM combined extraction successful for {file.filename}")
+            # Check if LLM is actually available
+            llm_available = check_llm_available()
+            print(f"LLM_AVAILABLE={LLM_AVAILABLE}, check_llm_available()={llm_available} for {file.filename}")
+            if llm_available:
+                # Try combined LLM call first (faster - single HTTP request)
+                print(f"Attempting LLM extraction for {file.filename}")
+                combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=4000)
+                if combined_result:
+                    fields.update({
+                        "doc_type": combined_result.get("doc_type"),
+                        "issuer": combined_result.get("issuer"),
+                        "date_iso": combined_result.get("date_iso")
+                    })
+                    suggested_filename = combined_result.get("suggested_filename")
+                    print(f"LLM combined extraction successful for {file.filename}")
         
         # Fallback: Use separate LLM calls if combined call not available or failed
         if not suggested_filename and LLM_AVAILABLE:
-            if extract_with_llm:
+            llm_available = check_llm_available()
+            if llm_available and extract_with_llm:
+                print(f"Attempting separate LLM field extraction for {file.filename}")
                 llm_fields = extract_with_llm(text_content, max_chars=4000)
+            else:
+                llm_fields = None
             if llm_fields:
                 fields.update(llm_fields)
                 print(f"LLM field extraction successful for {file.filename}")
             
-            if suggest_filename_with_llm:
+            if llm_available and suggest_filename_with_llm:
+                print(f"Attempting LLM filename generation for {file.filename}")
                 llm_filename = suggest_filename_with_llm(fields, text_content[:4000])
                 if llm_filename:
                     suggested_filename = llm_filename
@@ -287,14 +391,15 @@ async def ocr_extract(
             suggested_filename = build_fallback_filename(fields)
             print(f"Using fallback filename for {file.filename}")
         
+        # Add Num prefix to filename (for both LLM-generated and fallback filenames)
+        suggested_filename = add_num_prefix(suggested_filename, fields.get("date_iso"))
+        
         # Cache the result
         _file_cache[file_hash] = {
             "fields": {
                 "doc_type": fields.get("doc_type"),
                 "issuer": fields.get("issuer"),
                 "date_iso": fields.get("date_iso"),
-                "account_last4": fields.get("account_last4"),
-                "asx_code": fields.get("asx_code")
             },
             "suggested_filename": suggested_filename
         }

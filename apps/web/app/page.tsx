@@ -461,21 +461,21 @@ export default function Home() {
           <div className="flex flex-col sm:flex-row items-start sm:items-end justify-between gap-4">
             {/* Left: Logo */}
             <div className="flex items-end flex-shrink-0">
-              <img
-                src="/pg-logo.svg"
-                alt="PG Logo"
-                className="h-16 sm:h-20 md:h-24 lg:h-28 w-auto"
-              />
-            </div>
-            
+            <img
+              src="/pg-logo.svg"
+              alt="PG Logo"
+              className="h-16 sm:h-20 md:h-24 lg:h-28 w-auto"
+            />
+          </div>
+          
             {/* Middle: Title and Subtitle - Centered */}
             <div className="flex-1 min-w-0 flex flex-col items-center justify-end">
               <h1 className="text-4xl sm:text-5xl font-bold text-slate-900 mb-3 tracking-tight text-center">PDFsaver</h1>
               <p className="text-base sm:text-lg text-slate-600 font-medium text-center">
-                Bulk upload PDF files, automatically extract key information and rename
-              </p>
-            </div>
-            
+              Bulk upload PDF files, automatically extract key information and rename
+            </p>
+        </div>
+
             {/* Right: Action Buttons - Always visible, bottom aligned with logo */}
             <div className="flex items-center gap-3 flex-shrink-0">
               <button
@@ -489,18 +489,18 @@ export default function Home() {
               >
                 Download ({readyCount} file{readyCount !== 1 ? 's' : ''})
               </button>
-              <button
-                onClick={handleClearAll}
+            <button
+              onClick={handleClearAll}
                 disabled={files.length === 0}
                 className={`font-semibold py-2.5 px-5 rounded-lg shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 active:scale-95 text-sm sm:text-base ${
                   files.length > 0
                     ? 'bg-slate-500 hover:bg-slate-600 text-white hover:shadow-md focus:ring-slate-500 cursor-pointer'
                     : 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60'
                 }`}
-              >
-                Clear All ({files.length} file{files.length !== 1 ? 's' : ''})
-              </button>
-            </div>
+            >
+              Clear All ({files.length} file{files.length !== 1 ? 's' : ''})
+            </button>
+          </div>
           </div>
         </div>
 

@@ -6,7 +6,7 @@ FastAPI service for OCR processing and text extraction of scanned PDFs.
 
 - 🔍 Automatically detect if PDF has text layer
 - 📝 OCR processing for scanned PDFs (using OCRmyPDF + Tesseract)
-- 🎯 Extract document fields (type, issuer, date, account)
+- 🎯 Extract document fields (type, issuer, date)
 - 🔐 Bearer Token authentication
 - 🌐 CORS support
 - 🐳 Docker support
@@ -126,8 +126,7 @@ Content-Type: multipart/form-data
   "fields": {
     "doc_type": "DividendStatement",
     "issuer": "Computershare",
-    "date_iso": "2025-03-31",
-    "account_last4": "1234"
+    "date_iso": "2025-03-31"
   },
   "suggested_filename": "2025-03-31_Computershare_DividendStatement_1234.pdf"
 }

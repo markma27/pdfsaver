@@ -72,7 +72,7 @@ cd apps\ocr-worker
 
 ✅ PDF uploaded successfully
 ✅ Text extracted (or "Needs OCR" shown)
-✅ Fields detected (type, issuer, date, account)
+✅ Fields detected (type, issuer, date)
 ✅ Suggested filename generated
 ✅ Can edit filename inline
 ✅ Can download ZIP with all files
