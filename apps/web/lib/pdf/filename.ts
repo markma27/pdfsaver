@@ -96,7 +96,8 @@ export function buildFilename(fields: DetectedFields): string {
     docTypeTitle = 'Other';
   } else {
     // For unknown types, convert to Title Case
-    const cleaned = fields.doc_type?.replace('Statement', '').replace('Contract', '') || 'unknown';
+    const docTypeStr = fields.doc_type ? String(fields.doc_type) : 'unknown';
+    const cleaned = docTypeStr.replace('Statement', '').replace('Contract', '') || 'unknown';
     docTypeTitle = titleCase(cleaned);
   }
   
