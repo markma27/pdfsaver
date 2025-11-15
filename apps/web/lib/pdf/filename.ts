@@ -72,6 +72,8 @@ export function buildFilename(fields: DetectedFields): string {
     docTypeTitle = 'DistributionAndCapitalCallStatement';
   } else if (fields.doc_type === 'DistributionStatement') {
     docTypeTitle = 'DistributionStatement';
+  } else if (fields.doc_type === 'CapitalCallStatement') {
+    docTypeTitle = 'CapitalCallStatement';
   } else if (fields.doc_type === 'DividendStatement') {
     docTypeTitle = 'DividendStatement';
   } else if (fields.doc_type === 'BuyContract') {
@@ -88,6 +90,10 @@ export function buildFilename(fields: DetectedFields): string {
     docTypeTitle = 'PeriodicStatement';
   } else if (fields.doc_type === 'NetAssetSummaryStatement') {
     docTypeTitle = 'NetAssetSummaryStatement';
+  } else if (fields.doc_type === 'FinancialStatement') {
+    docTypeTitle = 'FinancialStatement';
+  } else if (fields.doc_type === 'Other') {
+    docTypeTitle = 'Other';
   } else {
     // For unknown types, convert to Title Case
     const cleaned = fields.doc_type?.replace('Statement', '').replace('Contract', '') || 'unknown';

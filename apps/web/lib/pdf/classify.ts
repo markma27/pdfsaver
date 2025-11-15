@@ -7,12 +7,17 @@ dayjs.extend(customParseFormat);
 export type DocType =
   | 'DividendStatement'
   | 'DistributionStatement'
+  | 'CapitalCallStatement'
+  | 'CallAndDistributionStatement'
   | 'BankStatement'
   | 'BuyContract'
   | 'SellContract'
   | 'HoldingStatement'
   | 'TaxStatement'
-  | 'NetAssetSummaryStatement';
+  | 'NetAssetSummaryStatement'
+  | 'PeriodicStatement'
+  | 'FinancialStatement'
+  | 'Other';
 
 export interface DetectedFields {
   doc_type: DocType | null;
