@@ -403,10 +403,13 @@ async def ocr_extract(
         if LLM_AVAILABLE and extract_and_suggest_filename_with_llm:
             # Check if LLM is actually available
             llm_available = check_llm_available()
+            print(f"LLM available check: {llm_available}, USE_LLM={os.getenv('USE_LLM')}, LLM_PROVIDER={os.getenv('LLM_PROVIDER')}")
             if llm_available:
                 # Try combined LLM call first (faster - single HTTP request)
                 # Reduce text sample size for faster processing (2500 chars is usually enough)
+                print(f"Calling LLM for {file.filename}...")
                 combined_result = extract_and_suggest_filename_with_llm(text_content, max_chars=2500)
+                print(f"LLM result: {combined_result}")
                 if combined_result:
                     fields.update({
                         "doc_type": combined_result.get("doc_type"),
@@ -414,27 +417,39 @@ async def ocr_extract(
                         "date_iso": combined_result.get("date_iso")
                     })
                     suggested_filename = combined_result.get("suggested_filename")
+                    print(f"Extracted fields: {fields}, suggested_filename: {suggested_filename}")
+            else:
+                print(f"LLM not available for {file.filename}. USE_LLM={os.getenv('USE_LLM')}, LLM_PROVIDER={os.getenv('LLM_PROVIDER')}")
+        else:
+            print(f"LLM_AVAILABLE={LLM_AVAILABLE}, extract_and_suggest_filename_with_llm={extract_and_suggest_filename_with_llm}")
         
         # Fallback: Use separate LLM calls if combined call not available or failed
         if not suggested_filename and LLM_AVAILABLE:
             llm_available = check_llm_available()
+            print(f"Fallback LLM check: llm_available={llm_available}")
             if llm_available and extract_with_llm:
                 # Reduce text sample size for faster processing
+                print(f"Calling extract_with_llm for {file.filename}...")
                 llm_fields = extract_with_llm(text_content, max_chars=2500)
+                print(f"extract_with_llm result: {llm_fields}")
             else:
                 llm_fields = None
             if llm_fields:
                 fields.update(llm_fields)
+                print(f"Updated fields after extract_with_llm: {fields}")
             
             if llm_available and suggest_filename_with_llm:
+                print(f"Calling suggest_filename_with_llm for {file.filename}...")
                 llm_filename = suggest_filename_with_llm(fields, text_content[:2500])
+                print(f"suggest_filename_with_llm result: {llm_filename}")
                 if llm_filename:
                     suggested_filename = llm_filename
         
         # Final fallback: Build simple filename if LLM not available or failed
         if not suggested_filename:
+            print(f"Using fallback filename for {file.filename}. Fields: {fields}")
             suggested_filename = build_fallback_filename(fields)
-            print(f"Using fallback filename for {file.filename}")
+            print(f"Fallback filename generated: {suggested_filename}")
         
         # Add Num prefix to filename (for both LLM-generated and fallback filenames)
         suggested_filename = add_num_prefix(suggested_filename, fields.get("date_iso"))
