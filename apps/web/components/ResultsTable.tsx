@@ -112,23 +112,41 @@ export function ResultsTable({
               
               <div className="text-sm text-slate-600">
                 {editingId === file.id ? (
-                  <div className="flex items-center gap-2">
+                  <form
+                    onSubmit={e => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleEditSave(file.id);
+                      return false;
+                    }}
+                    onClick={e => e.stopPropagation()}
+                    className="flex items-center gap-2"
+                  >
                     <input
                       type="text"
                       value={editValue}
                       onChange={e => setEditValue(e.target.value)}
                       onKeyDown={e => {
-                        e.stopPropagation();
-                        handleKeyDown(e, file.id);
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.nativeEvent.stopImmediatePropagation();
+                          handleEditSave(file.id);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.nativeEvent.stopImmediatePropagation();
+                          handleEditCancel();
+                        }
                       }}
                       onClick={e => e.stopPropagation()}
                       onBlur={e => {
-                        // Don't save on blur if clicking Save/Cancel buttons
+                        // Don't save on blur if clicking Save/Cancel buttons or if Enter was just pressed
                         const relatedTarget = e.relatedTarget as HTMLElement;
                         if (relatedTarget && (relatedTarget.closest('button') || relatedTarget.closest('input'))) {
                           return;
                         }
-                        // Small delay to allow button clicks to process first
+                        // Small delay to allow button clicks and Enter key to process first
                         setTimeout(() => {
                           if (editingId === file.id) {
                             handleEditSave(file.id);
@@ -139,6 +157,7 @@ export function ResultsTable({
                       autoFocus
                     />
                     <button
+                      type="submit"
                       onClick={e => {
                         e.stopPropagation();
                         e.preventDefault();
@@ -149,6 +168,7 @@ export function ResultsTable({
                       Save
                     </button>
                     <button
+                      type="button"
                       onClick={e => {
                         e.stopPropagation();
                         e.preventDefault();
@@ -158,7 +178,7 @@ export function ResultsTable({
                     >
                       Cancel
                     </button>
-                  </div>
+                  </form>
                 ) : file.status === 'processing' || file.status === 'ocr-processing' ? (
                   <span className="text-slate-400 italic font-medium">pending...</span>
                 ) : file.status === 'ready' || file.status === 'needs-review' ? (

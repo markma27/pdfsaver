@@ -61,7 +61,7 @@ OUTPUT FORMAT (EXTRACTION MODE)
 Return ONLY this JSON object:
 
 {{
-  "doc_type": "DividendStatement|DistributionStatement|CapitalCallStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|Other|null",
+  "doc_type": "DividendStatement|DistributionStatement|CapitalCallStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|FinancialStatement|Other|null",
   "issuer": "fund/product/company name or null",
   "asx_code": "ASX code or null",
   "date_iso": "YYYY-MM-DD or null",
@@ -110,6 +110,12 @@ NetAssetSummaryStatement
 - Keywords: "Net Asset Summary", "NAV Summary", "Fund Performance"
 - If NAV + tax info are both present → TaxStatement
 
+FinancialStatement
+- Keywords: "Financial Statements", "Financial Statement", "Directors' Report", "Directors Report", "Annual Report", "Audited Financial Statements", "Consolidated Financial Statements"
+- Look for patterns like: "DIRECTORS' REPORT AND FINANCIAL STATEMENTS", "FOR THE YEAR ENDED", "Financial Statements for the year ended"
+- This is a formal financial reporting document, NOT a periodic statement
+- If document contains "Financial Statements" or "Directors' Report" → FinancialStatement, NOT PeriodicStatement
+
 Other
 - Everything else
 
@@ -119,6 +125,7 @@ ISSUER EXTRACTION RULES
 Issuer must be the FUND/PRODUCT/COMPANY from THIS document.
 
 For BuyContract/SellContract:
+- CRITICAL: You MUST extract the issuer/investment name. Returning null is NOT acceptable unless the document truly has no security information.
 - Extract the INVESTMENT/SECURITY name being bought/sold
 - Prioritise fields in THIS ORDER:
   1. "COMPANY:" - HIGHEST PRIORITY (e.g., "COMPANY: CLEO DIAGNOSTICS LTD" → "CLEO DIAGNOSTICS LTD")
@@ -126,14 +133,20 @@ For BuyContract/SellContract:
   3. "Security Description:" - PRIMARY field - Look for this in:
      * Direct format: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
      * Table format: After "WE HAVE BOUGHT/SOLD THE FOLLOWING SECURITIES FOR YOU", find the table row with "Security Description" column
+     * Table row example: "Quantity 25,682 Security Code CRED Security Description BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF Price 23.4603"
+       → Extract "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF"
      * Table row example: "Quantity 39,260 Security Code DIFF Security Description PERPETUAL DIVERSIFIED INCOME ACTIVE ETF Price 10.1300"
+       → Extract "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
      * Extract the FULL name including "ETF", "FUND", "INDEX", "ISHARES" (e.g., "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF", "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF")
-  4. "Investment:", "Security:", "Code:" followed by security name
+     * The Security Description is usually the longest text in the table row (not Quantity, not Price, not Code)
+  4. Look for security name in table rows - find the row that contains quantity, security code, and a long name (usually the investment name)
+  5. "Investment:", "Security:", "Code:" followed by security name
 - Remove unnecessary descriptors: "ORDINARY FULLY PAID", "FRN", "Callable", coupon details
 - BUT preserve ETF/index names: Keep "INDEX", "ISHARES", "ETF", "FUND" if present (e.g., "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" should remain complete)
-- DO NOT use broker names (CommSec, JBWere, Ord Minnett, Morgan Stanley, Equity & Super) or investor names
+- DO NOT use broker names (CommSec, JBWere, Ord Minnett, Morgan Stanley, Equity & Super, EquitySuper) or investor names
 - CRITICAL: Do NOT extract legal disclaimers. If extracted name is very long (>100 chars) or contains phrases like "In Australia", "Liability", "Members", "Unless Otherwise Stated", reject it and look for actual investment name
 - CRITICAL: Do NOT extract "Quantity" or other table column headers - extract the actual investment name
+- CRITICAL: If you see a table with columns like "Quantity", "Security Code", "Security Description", "Price", "Consideration" - the investment name is in the "Security Description" column value
 
 For HoldingStatement/Share Summary/NetAssetSummaryStatement:
 - Extract the FUND name from the document TITLE (usually at the top of the document)
@@ -172,6 +185,15 @@ For DividendStatement:
 - Look for company name near "Dividend Statement" title
 - DO NOT use service provider or registry names - use the actual fund/company name
 
+For FinancialStatement:
+- Extract the COMPANY name from the document title/header
+- Look for patterns like: "COMPANY NAME DIRECTORS' REPORT AND FINANCIAL STATEMENTS"
+- Examples:
+  * "BIOSCEPTRE INTERNATIONAL LIMITED DIRECTORS' REPORT AND FINANCIAL STATEMENTS" → "BIOSCEPTRE INTERNATIONAL LIMITED"
+  * "ABC COMPANY LIMITED Financial Statements" → "ABC COMPANY LIMITED"
+- Extract the FULL company name including "LIMITED", "PTY LTD", etc. (do NOT remove suffixes for Financial Statements)
+- The company name is usually the FIRST prominent name in the document title, before "DIRECTORS' REPORT", "FINANCIAL STATEMENTS", etc.
+
 For other document types:
 - Extract the fund/product/company name from document title or main content
 - Look for fund names in document headers or titles
@@ -194,6 +216,11 @@ DistributionStatement:
 BuyContract/SellContract:
   Confirmation Date → Transaction Date → Trade Date
   DO NOT use "Settlement Date" or "ASX Settlement Date" - these are future dates
+
+FinancialStatement:
+  Year End Date → "FOR THE YEAR ENDED" date → Statement Date
+  Look for patterns like "FOR THE YEAR ENDED 30 JUNE 2025" → extract "2025-06-30"
+  Australian date format: DD/MM/YYYY or DD MMMM YYYY (e.g., "30 June 2025" → "2025-06-30")
 
 All others:
   Statement Date or main document date
@@ -311,7 +338,7 @@ OUTPUT FORMAT (EXTRACTION + FILENAME MODE)
 Return ONLY this JSON object:
 
 {{
-  "doc_type": "DividendStatement|DistributionStatement|CapitalCallStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|Other|null",
+  "doc_type": "DividendStatement|DistributionStatement|CapitalCallStatement|CallAndDistributionStatement|PeriodicStatement|BankStatement|BuyContract|SellContract|HoldingStatement|TaxStatement|NetAssetSummaryStatement|FinancialStatement|Other|null",
   "issuer": "fund/product/company name or null",
   "asx_code": "ASX code or null",
   "date_iso": "YYYY-MM-DD or null",
@@ -361,6 +388,12 @@ NetAssetSummaryStatement
 - Keywords: "Net Asset Summary", "NAV Summary", "Fund Performance"
 - If NAV + tax info are both present → TaxStatement
 
+FinancialStatement
+- Keywords: "Financial Statements", "Financial Statement", "Directors' Report", "Directors Report", "Annual Report", "Audited Financial Statements", "Consolidated Financial Statements"
+- Look for patterns like: "DIRECTORS' REPORT AND FINANCIAL STATEMENTS", "FOR THE YEAR ENDED", "Financial Statements for the year ended"
+- This is a formal financial reporting document, NOT a periodic statement
+- If document contains "Financial Statements" or "Directors' Report" → FinancialStatement, NOT PeriodicStatement
+
 Other
 - Everything else
 
@@ -370,6 +403,7 @@ ISSUER EXTRACTION RULES
 Issuer must be the FUND/PRODUCT/COMPANY from THIS document.
 
 For BuyContract/SellContract:
+- CRITICAL: You MUST extract the issuer/investment name. Returning null is NOT acceptable unless the document truly has no security information.
 - Extract the INVESTMENT/SECURITY name being bought/sold
 - Prioritise fields in THIS ORDER:
   1. "COMPANY:" - HIGHEST PRIORITY (e.g., "COMPANY: CLEO DIAGNOSTICS LTD" → "CLEO DIAGNOSTICS LTD")
@@ -377,14 +411,20 @@ For BuyContract/SellContract:
   3. "Security Description:" - PRIMARY field - Look for this in:
      * Direct format: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
      * Table format: After "WE HAVE BOUGHT/SOLD THE FOLLOWING SECURITIES FOR YOU", find the table row with "Security Description" column
+     * Table row example: "Quantity 25,682 Security Code CRED Security Description BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF Price 23.4603"
+       → Extract "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF"
      * Table row example: "Quantity 39,260 Security Code DIFF Security Description PERPETUAL DIVERSIFIED INCOME ACTIVE ETF Price 10.1300"
+       → Extract "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
      * Extract the FULL name including "ETF", "FUND", "INDEX", "ISHARES" (e.g., "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF", "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF")
-  4. "Investment:", "Security:", "Code:" followed by security name
+     * The Security Description is usually the longest text in the table row (not Quantity, not Price, not Code)
+  4. Look for security name in table rows - find the row that contains quantity, security code, and a long name (usually the investment name)
+  5. "Investment:", "Security:", "Code:" followed by security name
 - Remove unnecessary descriptors: "ORDINARY FULLY PAID", "FRN", "Callable", coupon details
 - BUT preserve ETF/index names: Keep "INDEX", "ISHARES", "ETF", "FUND" if present (e.g., "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" should remain complete)
-- DO NOT use broker names (CommSec, JBWere, Ord Minnett, Morgan Stanley, Equity & Super) or investor names
+- DO NOT use broker names (CommSec, JBWere, Ord Minnett, Morgan Stanley, Equity & Super, EquitySuper) or investor names
 - CRITICAL: Do NOT extract legal disclaimers. If extracted name is very long (>100 chars) or contains phrases like "In Australia", "Liability", "Members", "Unless Otherwise Stated", reject it and look for actual investment name
 - CRITICAL: Do NOT extract "Quantity" or other table column headers - extract the actual investment name
+- CRITICAL: If you see a table with columns like "Quantity", "Security Code", "Security Description", "Price", "Consideration" - the investment name is in the "Security Description" column value
 
 For HoldingStatement/Share Summary/NetAssetSummaryStatement:
 - Extract the FUND name from the document TITLE (usually at the top of the document)
@@ -423,6 +463,15 @@ For DividendStatement:
 - Look for company name near "Dividend Statement" title
 - DO NOT use service provider or registry names - use the actual fund/company name
 
+For FinancialStatement:
+- Extract the COMPANY name from the document title/header
+- Look for patterns like: "COMPANY NAME DIRECTORS' REPORT AND FINANCIAL STATEMENTS"
+- Examples:
+  * "BIOSCEPTRE INTERNATIONAL LIMITED DIRECTORS' REPORT AND FINANCIAL STATEMENTS" → "BIOSCEPTRE INTERNATIONAL LIMITED"
+  * "ABC COMPANY LIMITED Financial Statements" → "ABC COMPANY LIMITED"
+- Extract the FULL company name including "LIMITED", "PTY LTD", etc. (do NOT remove suffixes for Financial Statements)
+- The company name is usually the FIRST prominent name in the document title, before "DIRECTORS' REPORT", "FINANCIAL STATEMENTS", etc.
+
 For other document types:
 - Extract the fund/product/company name from document title or main content
 - Look for fund names in document headers or titles
@@ -445,6 +494,11 @@ DistributionStatement:
 BuyContract/SellContract:
   Confirmation Date → Transaction Date → Trade Date
   DO NOT use "Settlement Date" or "ASX Settlement Date" - these are future dates
+
+FinancialStatement:
+  Year End Date → "FOR THE YEAR ENDED" date → Statement Date
+  Look for patterns like "FOR THE YEAR ENDED 30 JUNE 2025" → extract "2025-06-30"
+  Australian date format: DD/MM/YYYY or DD MMMM YYYY (e.g., "30 June 2025" → "2025-06-30")
 
 All others:
   Statement Date or main document date
@@ -489,6 +543,7 @@ SellContract → Sell Contract
 HoldingStatement → Holding Statement
 TaxStatement → Tax Statement
 NetAssetSummaryStatement → Net Asset Summary Statement
+FinancialStatement → Financial Statement
 
 ------------------------------------------
 RETURN FORMAT
@@ -608,22 +663,32 @@ SellContract → Sell Contract
 HoldingStatement → Holding Statement
 TaxStatement → Tax Statement
 NetAssetSummaryStatement → Net Asset Summary Statement
+FinancialStatement → Financial Statement
 
 ------------------------------------------
 INVESTMENT NAME EXTRACTION (BuyContract/SellContract)
 ------------------------------------------
 CRITICAL: Extract the INVESTMENT/SECURITY name being bought/sold from the document text.
 
+CRITICAL: You MUST extract the investment name. Returning null or "Unknown" is NOT acceptable unless the document truly has no security information.
+
 Look for fields in THIS PRIORITY ORDER:
 1. "COMPANY:" - HIGHEST PRIORITY (e.g., "COMPANY: CLEO DIAGNOSTICS LTD" → "CLEO DIAGNOSTICS")
 2. "Stock Description:" - HIGH PRIORITY (e.g., "Stock Description: RUSSELL 2000 INDEX ISHARES" → "RUSSELL 2000 INDEX ISHARES")
 3. "Security Description:" - PRIMARY field - Look in tables after "WE HAVE BOUGHT/SOLD THE FOLLOWING SECURITIES FOR YOU"
-   * Example: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
-   * Example: "Security Description: VANECK AUSTRALIAN SUBORDINATED DEBT ETF" → "VANECK AUSTRALIAN SUBORDINATED DEBT ETF"
+   * Direct format: "Security Description: PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
+   * Table format: Look for table rows with columns: Quantity, Security Code, Security Description, Price, Consideration
+   * Table row example: "Quantity 25,682 Security Code CRED Security Description BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF Price 23.4603"
+     → Extract "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF"
+   * Table row example: "Quantity 39,260 Security Code DIFF Security Description PERPETUAL DIVERSIFIED INCOME ACTIVE ETF Price 10.1300"
+     → Extract "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
    * Extract the FULL name including "ETF", "FUND", "INDEX", "ISHARES"
-4. "Investment:", "Code:", or main investment name in transaction details
+   * The Security Description is usually the longest text in the table row (not Quantity, not Price, not Code)
+4. Look for security name patterns in transaction details tables
+5. "Investment:", "Code:" followed by security name
 
 Examples of CORRECT extraction:
+- "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF" → "BETASHARES AUS INVESTMENT GRADE CORPORATE BOND ETF"
 - "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF" → "PERPETUAL DIVERSIFIED INCOME ACTIVE ETF"
 - "VANECK AUSTRALIAN SUBORDINATED DEBT ETF" → "VANECK AUSTRALIAN SUBORDINATED DEBT ETF"
 - "CLEO DIAGNOSTICS LTD" → "CLEO DIAGNOSTICS" (remove Ltd)
@@ -685,6 +750,15 @@ For HoldingStatement/Share Summary/NetAssetSummaryStatement:
 - The fund name is usually the FIRST prominent name in the document title, before words like "Share Summary", "Statement", "NAV", etc.
 - Remove suffixes like "Ltd.", "Limited", "Inc." when creating the slug, but keep the main fund name
 
+For FinancialStatement:
+- Extract the COMPANY name from the document title/header
+- Look for patterns like: "COMPANY NAME DIRECTORS' REPORT AND FINANCIAL STATEMENTS"
+- Examples:
+  * "BIOSCEPTRE INTERNATIONAL LIMITED DIRECTORS' REPORT AND FINANCIAL STATEMENTS" → "BIOSCEPTRE INTERNATIONAL LIMITED"
+  * "ABC COMPANY LIMITED Financial Statements" → "ABC COMPANY LIMITED"
+- Extract the FULL company name including "LIMITED", "PTY LTD", etc. (do NOT remove suffixes for Financial Statements)
+- The company name is usually the FIRST prominent name in the document title, before "DIRECTORS' REPORT", "FINANCIAL STATEMENTS", etc.
+
 For other document types:
 - Fund names after "Fund:", "Product:", "ETF:", or in document titles
 ------------------------------------------
@@ -695,6 +769,11 @@ Extract from document context using these priorities:
 BuyContract/SellContract:
   Confirmation Date → Transaction Date → Trade Date
   DO NOT use "Settlement Date" or "ASX Settlement Date"
+
+FinancialStatement:
+  Year End Date → "FOR THE YEAR ENDED" date → Statement Date
+  Look for patterns like "FOR THE YEAR ENDED 30 JUNE 2025" → extract "2025-06-30"
+  Australian date format: DD/MM/YYYY or DD MMMM YYYY (e.g., "30 June 2025" → "2025-06-30")
 
 DividendStatement:
   Payment Date → Record Date → Statement Date

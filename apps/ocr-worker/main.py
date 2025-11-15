@@ -150,7 +150,8 @@ def build_fallback_filename(fields: Dict[str, Optional[str]]) -> str:
         "SellContract": "Sell Contract",
         "HoldingStatement": "Holding Statement",
         "TaxStatement": "Tax Statement",
-        "NetAssetSummaryStatement": "Net Asset Summary Statement"
+        "NetAssetSummaryStatement": "Net Asset Summary Statement",
+        "FinancialStatement": "Financial Statement"
     }
     doc_type_tag = doc_type_map.get(doc_type, doc_type.replace("_", " ").title())
     
