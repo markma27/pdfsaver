@@ -82,10 +82,6 @@ export async function loadRules(): Promise<RulesConfig> {
       TaxStatement: {
         must: ['Annual Tax Statement', 'Tax Summary', 'AMMA', 'AMIT'],
         hints: ['Tax Year', 'Assessable Income']
-      },
-      DistributionStatement: {
-        must: ['Distribution statement', 'Distribution Advice'],
-        hints: ['Distribution', 'Payment date', 'Record date']
       }
     },
     issuers: {
