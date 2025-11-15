@@ -1,0 +1,6 @@
+# Railway ignore file - similar to .gitignore
+# This file tells Railway which files to ignore during deployment
+
+# Don't ignore anything - we need all files
+!*
+
