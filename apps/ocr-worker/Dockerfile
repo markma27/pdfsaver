@@ -21,11 +21,11 @@ COPY main.py .
 COPY llm_helper.py .
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8123
 
 # Run the application
 # Use environment variables for configuration
-# Railway provides PORT environment variable, default to 8000 if not set
+# Default to 8123 if PORT not set
 # Use shell form to allow environment variable substitution
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8123}"]
 

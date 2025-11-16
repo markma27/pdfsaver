@@ -10,7 +10,10 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: 'PDFsaver - PDF File Auto-Renaming Tool',
-  description: 'Bulk upload PDF files, automatically extract key information and rename'
+  description: 'Bulk upload PDF files, automatically extract key information and rename',
+  icons: {
+    icon: '/icon.svg',
+  },
 };
 
 export default function RootLayout({

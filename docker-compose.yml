@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # OCR Worker Service
+  ocr-worker:
+    build:
+      context: ./apps/ocr-worker
+      dockerfile: Dockerfile
+    container_name: pdfsaver-ocr-worker
+    ports:
+      - "8123:8123"
+    environment:
+      - OCR_TOKEN=${OCR_TOKEN:-change-me-please}
+      # Allow internal network access - update with your server IP or domain
+      - ALLOW_ORIGIN=${ALLOW_ORIGIN:-http://localhost:3000}
+      - ALLOW_ORIGINS=${ALLOW_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      - PORT=8123
+      # LLM Configuration (optional)
+      - USE_LLM=${USE_LLM:-false}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
+    volumes:
+      # Optional: Mount for persistent cache or logs
+      - ocr-worker-temp:/tmp
+    networks:
+      - pdfsaver-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8123/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Next.js Frontend Service
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: pdfsaver-web
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      # Update with your server IP or domain for internal network access
+      - NEXT_PUBLIC_APP_ORIGIN=${NEXT_PUBLIC_APP_ORIGIN:-http://localhost:3000}
+      # Use internal Docker network for OCR Worker
+      - NEXT_PUBLIC_OCR_URL=http://ocr-worker:8123/v1/ocr-extract
+      # Token is still needed for Bearer auth, but only used internally
+      - NEXT_PUBLIC_OCR_TOKEN=${OCR_TOKEN:-change-me-please}
+    depends_on:
+      ocr-worker:
+        condition: service_healthy
+    networks:
+      - pdfsaver-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Ollama LLM Service (if using local LLM)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: pdfsaver-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - pdfsaver-network
+    restart: unless-stopped
+    profiles:
+      - llm  # Only start if --profile llm is used
+
+networks:
+  pdfsaver-network:
+    driver: bridge
+
+volumes:
+  ocr-worker-temp:
+  ollama-data:
+

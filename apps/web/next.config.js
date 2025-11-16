@@ -15,6 +15,7 @@ if (OCR_URL) {
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: 'standalone', // Enable standalone output for Docker
   webpack: (config, { isServer }) => {
     if (!isServer) {
       // Copy pdfjs-dist worker file to public folder during build

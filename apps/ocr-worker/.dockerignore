@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+README.md
+SETUP.md
+
+# Test files
+test-pdfs/
+*.pdf
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+
+# Logs
+*.log
+
